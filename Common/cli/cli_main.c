@@ -168,20 +168,69 @@ void FreeRTOS_CLIProcessCommand( ConsoleIO_t * const pxCIO,
         /* Tokenize into ulArgC / pcArgv */
         char * pcArgv[ ulArgC ]; /* TODO fix const */
 
-        char * pcTokenizerCtx = NULL;
+        char * pcCurrentChar = pcCommandInput;
+        uint32_t ulArgIndex = 0;
 
-        /* pcArgv[ 0 ] is the command passed into the cli which was matched on */
-        pcArgv[ 0 ] = strtok_r( pcCommandInput, " ", &pcTokenizerCtx );
-
-        /* Subsequent members of pcArgv are command line parameters */
-        for( uint32_t i = 1; i < ulArgC; i++ )
+        /* Custom tokenizer that handles quoted strings */
+        while( *pcCurrentChar != '\x00' && ulArgIndex < ulArgC )
         {
-            pcArgv[ i ] = strtok_r( NULL, " ", &pcTokenizerCtx );
-            configASSERT( pcArgv[ i ] != NULL );
+            /* Skip leading spaces */
+            while( *pcCurrentChar == ' ' && *pcCurrentChar != '\x00' )
+            {
+                pcCurrentChar++;
+            }
+
+            if( *pcCurrentChar == '\x00' )
+            {
+                break;
+            }
+
+            /* Check if this is a quoted string */
+            if( *pcCurrentChar == '"' )
+            {
+                /* Skip opening quote */
+                pcCurrentChar++;
+
+                /* Save start of the string */
+                pcArgv[ ulArgIndex ] = pcCurrentChar;
+
+                /* Find closing quote */
+                while( *pcCurrentChar != '"' && *pcCurrentChar != '\x00' )
+                {
+                    pcCurrentChar++;
+                }
+
+                /* Null-terminate at closing quote or end of string */
+                if( *pcCurrentChar == '"' )
+                {
+                    *pcCurrentChar = '\0';
+                    pcCurrentChar++;
+                }
+            }
+            else
+            {
+                /* Regular unquoted argument */
+                pcArgv[ ulArgIndex ] = pcCurrentChar;
+
+                /* Find next space or end of string */
+                while( *pcCurrentChar != ' ' && *pcCurrentChar != '\x00' )
+                {
+                    pcCurrentChar++;
+                }
+
+                /* Null-terminate if we found a space */
+                if( *pcCurrentChar == ' ' )
+                {
+                    *pcCurrentChar = '\0';
+                    pcCurrentChar++;
+                }
+            }
+
+            ulArgIndex++;
         }
 
-        /* Assert that we read all of the tokens */
-        configASSERT( strtok_r( NULL, " ", &pcTokenizerCtx ) == NULL );
+        /* Verify we parsed all expected arguments */
+        configASSERT( ulArgIndex == ulArgC );
 
         /* Call the callback function that is registered to this command. */
         pxCommand->pxCommandLineDefinition->pxCommandInterpreter( pxCIO, ulArgC, pcArgv );
@@ -315,20 +364,49 @@ static uint32_t prvGetNumberOfArgs( const char * pcCommandString )
     const char * pcCurrentChar = pcCommandString;
 
     /* Count the number of space delimited words in pcCommandString. */
+    /* Handle quoted strings as single arguments. */
     while( *pcCurrentChar != '\x00' )
     {
-        /*
-         * If the current character is not a space and
-         * the next character is a space or null
-         */
-        if( ( pcCurrentChar[ 0 ] != ' ' ) &&
-            ( ( pcCurrentChar[ 1 ] == ' ' ) ||
-              ( pcCurrentChar[ 1 ] == '\x00' ) ) )
+        /* Skip leading spaces */
+        while( ( *pcCurrentChar == ' ' ) && ( *pcCurrentChar != '\x00' ) )
         {
-            luArgCount++;
+            pcCurrentChar++;
         }
 
-        pcCurrentChar++;
+        if( *pcCurrentChar == '\x00' )
+        {
+            break;
+        }
+
+        /* Found start of an argument */
+        luArgCount++;
+
+        /* Check if this is a quoted string */
+        if( *pcCurrentChar == '"' )
+        {
+            /* Skip opening quote */
+            pcCurrentChar++;
+
+            /* Find closing quote */
+            while( ( *pcCurrentChar != '"' ) && ( *pcCurrentChar != '\x00' ) )
+            {
+                pcCurrentChar++;
+            }
+
+            /* Skip closing quote if found */
+            if( *pcCurrentChar == '"' )
+            {
+                pcCurrentChar++;
+            }
+        }
+        else
+        {
+            /* Regular unquoted argument - skip to next space or end */
+            while( ( *pcCurrentChar != ' ' ) && ( *pcCurrentChar != '\x00' ) )
+            {
+                pcCurrentChar++;
+            }
+        }
     }
 
     return luArgCount;
