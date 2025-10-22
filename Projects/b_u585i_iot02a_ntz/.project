@@ -37,6 +37,11 @@
 			<locationURI>WORKSPACE_LOC/Common</locationURI>
 		</link>
 		<link>
+			<name>Libraries/lwip/netif/ppp</name>
+			<type>2</type>
+			<location>/Users/engineer11/iot-reference-stm32u5/Middleware/lwip/src/netif/ppp</location>
+		</link>
+		<link>
 			<name>Libraries</name>
 			<type>2</type>
 			<locationURI>virtual:/virtual</locationURI>
@@ -84,7 +89,7 @@
 		<link>
 			<name>Libraries/FreeRTOS-Libraries-Integration-Tests</name>
 			<type>2</type>
-			<location>WORKSPACE_LOC/Middleware/FreeRTOS/FreeRTOS-Libraries-Integration-Tests/src</location>
+			<locationURI>WORKSPACE_LOC/Middleware/FreeRTOS/FreeRTOS-Libraries-Integration-Tests/src</locationURI>
 		</link>
 		<link>
 			<name>Libraries/LittleFS</name>
@@ -99,7 +104,7 @@
 		<link>
 			<name>Libraries/Unity</name>
 			<type>2</type>
-			<location>WORKSPACE_LOC/Middleware/Unity</location>
+			<locationURI>WORKSPACE_LOC/Middleware/Unity</locationURI>
 		</link>
 		<link>
 			<name>Libraries/backoffAlgorithm</name>
@@ -405,6 +410,11 @@
 			<name>Libraries/freertos_kernel/timers.c</name>
 			<type>1</type>
 			<locationURI>WORKSPACE_LOC/Middleware/FreeRTOS/kernel/timers.c</locationURI>
+		</link>
+		<link>
+			<name>Libraries/lwip/netif/ppp</name>
+			<type>2</type>
+			<location>/Users/engineer11/iot-reference-stm32u5/Middleware/lwip/src/netif/ppp</location>
 		</link>
 	</linkedResources>
 	<filteredResources>
