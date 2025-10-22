@@ -2,7 +2,6 @@
  * Cellular Driver Private Definitions
  *
  * Private header for cellular modem driver implementation.
- * Sierra Wireless HL7688/HL7680 support.
  */
 
 #ifndef CELLULAR_PRV_H
@@ -84,38 +83,13 @@ typedef enum
 } CellularRegState_t;
 
 /**
- * @brief AT command context
- */
-typedef struct
-{
-    char pcCommand[ CELLULAR_AT_CMD_MAX_LEN ];
-    char pcResponse[ CELLULAR_AT_RESP_MAX_LEN ];
-    uint32_t ulResponseLen;
-    BaseType_t xSuccess;
-    uint32_t ulTimeoutMs;
-    SemaphoreHandle_t xResponseSemaphore;
-} CellularAtCmd_t;
-
-/**
- * @brief Cellular configuration
- */
-typedef struct
-{
-    char pcApn[ CELLULAR_APN_MAX_LEN ];
-    char pcUsername[ 64 ];
-    char pcPassword[ 64 ];
-    BaseType_t xUseAuth;
-} CellularConfig_t;
-
-/**
- * @brief Cellular modem information
+ * @brief Cellular modem information (optional diagnostics)
  */
 typedef struct
 {
     char pcImei[ CELLULAR_IMEI_LEN + 1 ];
-    char pcIccid[ CELLULAR_ICCID_LEN + 1 ];
     char pcFirmwareVersion[ 32 ];
-    int lRssi;
+    int lRssi;                      /* Signal strength (0-31, 99=unknown) */
     CellularRegState_t xRegState;
 } CellularModemInfo_t;
 
@@ -126,37 +100,36 @@ typedef struct
 {
     UART_HandleTypeDef * pxUartHandle;
     TaskHandle_t xRxTaskHandle;
-    QueueHandle_t xTxQueue;
-    MessageBufferHandle_t xRxBuffer;
+    MessageBufferHandle_t xRxBuffer;    /* Receives data from UART ISR */
     SemaphoreHandle_t xTxMutex;
-    volatile BaseType_t xPppMode;
+    volatile BaseType_t xPppMode;       /* pdTRUE=PPP mode, pdFALSE=AT mode */
 } CellularUartCtx_t;
 
 /**
- * @brief PPP context for lwIP integration
+ * @brief Main cellular context - simplified for PPP
  */
 typedef struct
 {
-    struct netif xNetif;
-    TaskHandle_t xPppTaskHandle;
-    CellularUartCtx_t * pxUartCtx;
+    /* State */
     volatile CellularStatus_t xStatus;
-    TaskHandle_t xNetTaskHandle;
-} CellularPppCtx_t;
 
-/**
- * @brief Main cellular network connection context
- */
-typedef struct
-{
-    CellularConfig_t xConfig;
-    CellularModemInfo_t xModemInfo;
+    /* Configuration */
+    char pcApn[ CELLULAR_APN_MAX_LEN ];
+
+    /* Hardware */
     CellularUartCtx_t xUartCtx;
-    CellularPppCtx_t xPppCtx;
+
+    /* lwIP PPP interface */
+    struct netif xPppNetif;
+    void * pxPppPcb;                    /* PPP control block (ppp_pcb) */
+    TaskHandle_t xPppTaskHandle;        /* Task bridging UART <-> lwIP PPP */
+
+    /* Optional diagnostics */
+    CellularModemInfo_t xModemInfo;
+
+    /* Management task */
     TaskHandle_t xNetTaskHandle;
-    volatile CellularStatus_t xStatus;
-    volatile CellularStatus_t xStatusPrevious;
-} CellularNetConnCtx_t;
+} CellularContext_t;
 
 /* Function declarations for internal use */
 
@@ -168,24 +141,24 @@ BaseType_t xCellularUartRecv( CellularUartCtx_t * pxCtx, uint8_t * pucData, size
 void vCellularUartSetPppMode( CellularUartCtx_t * pxCtx, BaseType_t xEnable );
 
 /* cellular_at.c */
-BaseType_t xCellularAtInit( CellularNetConnCtx_t * pxCtx );
+BaseType_t xCellularAtInit( CellularContext_t * pxCtx );
 BaseType_t xCellularAtSendCommand( CellularUartCtx_t * pxUartCtx,
                                    const char * pcCmd,
                                    char * pcResponse,
                                    size_t xRespLen,
                                    uint32_t ulTimeoutMs );
-BaseType_t xCellularAtCheckModem( CellularNetConnCtx_t * pxCtx );
-BaseType_t xCellularAtGetModemInfo( CellularNetConnCtx_t * pxCtx );
-BaseType_t xCellularAtCheckSim( CellularNetConnCtx_t * pxCtx );
-BaseType_t xCellularAtSetApn( CellularNetConnCtx_t * pxCtx );
-BaseType_t xCellularAtWaitForRegistration( CellularNetConnCtx_t * pxCtx, uint32_t ulTimeoutMs );
-BaseType_t xCellularAtStartPpp( CellularNetConnCtx_t * pxCtx );
-BaseType_t xCellularAtStopPpp( CellularNetConnCtx_t * pxCtx );
+BaseType_t xCellularAtCheckModem( CellularContext_t * pxCtx );
+BaseType_t xCellularAtGetModemInfo( CellularContext_t * pxCtx );
+BaseType_t xCellularAtCheckSim( CellularContext_t * pxCtx );
+BaseType_t xCellularAtSetApn( CellularContext_t * pxCtx );
+BaseType_t xCellularAtWaitForRegistration( CellularContext_t * pxCtx, uint32_t ulTimeoutMs );
+BaseType_t xCellularAtStartPpp( CellularContext_t * pxCtx );
+BaseType_t xCellularAtStopPpp( CellularContext_t * pxCtx );
 
 /* cellular_ppp.c */
-BaseType_t xCellularPppInit( CellularPppCtx_t * pxCtx, CellularUartCtx_t * pxUartCtx );
-BaseType_t xCellularPppStart( CellularPppCtx_t * pxCtx );
-BaseType_t xCellularPppStop( CellularPppCtx_t * pxCtx );
+BaseType_t xCellularPppInit( CellularContext_t * pxCtx );
+BaseType_t xCellularPppStart( CellularContext_t * pxCtx );
+BaseType_t xCellularPppStop( CellularContext_t * pxCtx );
 void vCellularPppTask( void * pvParameters );
 
 #ifdef __cplusplus

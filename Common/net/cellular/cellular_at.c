@@ -1,29 +1,28 @@
 /*
  * Cellular AT Command Implementation
  *
- * AT command handler for Sierra Wireless HL7688/HL7680 modem
+ * AT command handler for SIM7600G modem with Simplex SIM
  */
 
 #include "logging_levels.h"
 #define LOG_LEVEL    LOG_INFO
 #include "logging.h"
 
-#include "cellular_at.h"
 #include "cellular_prv.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-/* AT command strings for Sierra Wireless HL7688/HL7680 */
+/* AT commands*/
 #define AT_CMD_TEST              ""                    /* AT - Test command */
 #define AT_CMD_GET_IMEI          "+CGSN"               /* Get IMEI */
-#define AT_CMD_GET_ICCID         "!ICCID?"             /* Get SIM ICCID (Sierra specific) */
+#define AT_CMD_GET_ICCID         "+CCID"               /* Get SIM ICCID */
 #define AT_CMD_GET_FW_VER        "I"                   /* Get firmware version */
 #define AT_CMD_CHECK_SIM         "+CPIN?"              /* Check SIM status */
 #define AT_CMD_GET_REG_STATUS    "+CREG?"              /* Get registration status */
 #define AT_CMD_SET_REG_URC       "+CREG=1"             /* Enable registration URCs */
 #define AT_CMD_GET_SIGNAL        "+CSQ"                /* Get signal quality */
-#define AT_CMD_SET_PDP_CONTEXT   "+CGDCONT=1,\"IP\",\"" /* Set PDP context */
+#define AT_CMD_SET_PDP_CONTEXT   "+CGDCONT=1,\"IPV4V6\",\"" /* Set PDP context (IPv4v6 for Simplex) */
 #define AT_CMD_ACTIVATE_PDP      "+CGACT=1,1"          /* Activate PDP context */
 #define AT_CMD_START_PPP         "D*99#"               /* Start PPP session */
 #define AT_CMD_ESCAPE_SEQ        "+++"                 /* Escape sequence (PPP -> AT) */
@@ -46,7 +45,7 @@ static BaseType_t prvParseRegistrationStatus( const char * pcResponse, CellularR
 
 static BaseType_t prvParseSignalQuality( const char * pcResponse, int * plRssi );
 
-BaseType_t xCellularAtInit( CellularNetConnCtx_t * pxCtx )
+BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
 {
     BaseType_t xResult = pdFALSE;
 
@@ -149,7 +148,7 @@ BaseType_t xCellularAtSendCommand( CellularUartCtx_t * pxUartCtx,
     return xResult;
 }
 
-BaseType_t xCellularAtCheckModem( CellularNetConnCtx_t * pxCtx )
+BaseType_t xCellularAtCheckModem( CellularContext_t * pxCtx )
 {
     char pcResponse[ 64 ];
 
@@ -165,7 +164,7 @@ BaseType_t xCellularAtCheckModem( CellularNetConnCtx_t * pxCtx )
     return pdFALSE;
 }
 
-BaseType_t xCellularAtGetModemInfo( CellularNetConnCtx_t * pxCtx )
+BaseType_t xCellularAtGetModemInfo( CellularContext_t * pxCtx )
 {
     char pcResponse[ 256 ];
 
@@ -224,7 +223,7 @@ BaseType_t xCellularAtGetModemInfo( CellularNetConnCtx_t * pxCtx )
     return pdTRUE;
 }
 
-BaseType_t xCellularAtCheckSim( CellularNetConnCtx_t * pxCtx )
+BaseType_t xCellularAtCheckSim( CellularContext_t * pxCtx )
 {
     char pcResponse[ 128 ];
 
@@ -249,12 +248,12 @@ BaseType_t xCellularAtCheckSim( CellularNetConnCtx_t * pxCtx )
     return pdFALSE;
 }
 
-BaseType_t xCellularAtSetApn( CellularNetConnCtx_t * pxCtx )
+BaseType_t xCellularAtSetApn( CellularContext_t * pxCtx )
 {
     char pcCmd[ CELLULAR_AT_CMD_MAX_LEN ];
     char pcResponse[ 128 ];
 
-    if( strlen( pxCtx->xConfig.pcApn ) == 0 )
+    if( strlen( pxCtx->pcApn ) == 0 )
     {
         LogWarn( "APN not configured, using default" );
         /* Many carriers auto-detect APN */
@@ -264,7 +263,7 @@ BaseType_t xCellularAtSetApn( CellularNetConnCtx_t * pxCtx )
     {
         snprintf( pcCmd, sizeof( pcCmd ), "%s%s\"",
                   AT_CMD_SET_PDP_CONTEXT,
-                  pxCtx->xConfig.pcApn );
+                  pxCtx->pcApn );
     }
 
     if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
@@ -275,7 +274,7 @@ BaseType_t xCellularAtSetApn( CellularNetConnCtx_t * pxCtx )
     {
         if( prvCheckResponseOk( pcResponse ) )
         {
-            LogInfo( "APN configured: %s", pxCtx->xConfig.pcApn );
+            LogInfo( "APN configured: %s", pxCtx->pcApn );
             return pdTRUE;
         }
     }
@@ -283,7 +282,7 @@ BaseType_t xCellularAtSetApn( CellularNetConnCtx_t * pxCtx )
     return pdFALSE;
 }
 
-BaseType_t xCellularAtWaitForRegistration( CellularNetConnCtx_t * pxCtx, uint32_t ulTimeoutMs )
+BaseType_t xCellularAtWaitForRegistration( CellularContext_t * pxCtx, uint32_t ulTimeoutMs )
 {
     TickType_t xStartTime = xTaskGetTickCount();
     TickType_t xTimeout = pdMS_TO_TICKS( ulTimeoutMs );
@@ -341,7 +340,7 @@ BaseType_t xCellularAtWaitForRegistration( CellularNetConnCtx_t * pxCtx, uint32_
     return pdFALSE;
 }
 
-BaseType_t xCellularAtStartPpp( CellularNetConnCtx_t * pxCtx )
+BaseType_t xCellularAtStartPpp( CellularContext_t * pxCtx )
 {
     char pcResponse[ 128 ];
 
@@ -386,7 +385,7 @@ BaseType_t xCellularAtStartPpp( CellularNetConnCtx_t * pxCtx )
     return pdFALSE;
 }
 
-BaseType_t xCellularAtStopPpp( CellularNetConnCtx_t * pxCtx )
+BaseType_t xCellularAtStopPpp( CellularContext_t * pxCtx )
 {
     LogInfo( "Stopping PPP session..." );
 
