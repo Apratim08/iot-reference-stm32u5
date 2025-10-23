@@ -36,6 +36,7 @@
 RTC_HandleTypeDef * pxHndlRtc = NULL;
 SPI_HandleTypeDef * pxHndlSpi2 = NULL;
 UART_HandleTypeDef * pxHndlUart1 = NULL;
+UART_HandleTypeDef * pxHndlUart3 = NULL;
 DCACHE_HandleTypeDef * pxHndlDCache = NULL;
 DMA_HandleTypeDef * pxHndlGpdmaCh4 = NULL;
 DMA_HandleTypeDef * pxHndlGpdmaCh5 = NULL;
@@ -680,6 +681,107 @@ void HAL_MspInit( void )
 {
     __HAL_RCC_PWR_CLK_ENABLE();
     HAL_PWREx_DisableUCPDDeadBattery();
+}
+
+void HAL_UART_MspInit( UART_HandleTypeDef * pxHndlUart )
+{
+    configASSERT( pxHndlUart != NULL );
+
+    if( pxHndlUart->Instance == USART3 )
+    {
+        /* Configure peripheral clock */
+        RCC_PeriphCLKInitTypeDef xRccPeriphClkInit =
+        {
+            .PeriphClockSelection = RCC_PERIPHCLK_USART3,
+            .Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1,
+        };
+
+        HAL_StatusTypeDef xResult = HAL_RCCEx_PeriphCLKConfig( &xRccPeriphClkInit );
+        configASSERT( xResult == HAL_OK );
+
+        /* Enable peripheral clock */
+        __HAL_RCC_USART3_CLK_ENABLE();
+        __HAL_RCC_GPIOD_CLK_ENABLE();
+
+        /*
+         * USART3 GPIO Configuration for SIM7600G cellular modem
+         * CN13 D0 (PD9) ------> USART3_RX (connected to SIM7600G TX Pin 8)
+         * CN13 D1 (PD8) ------> USART3_TX (connected to SIM7600G RX Pin 10)
+         */
+        GPIO_InitTypeDef xGpioInit =
+        {
+            .Pin       = GPIO_PIN_8 | GPIO_PIN_9,
+            .Mode      = GPIO_MODE_AF_PP,
+            .Pull      = GPIO_NOPULL,
+            .Speed     = GPIO_SPEED_FREQ_VERY_HIGH,
+            .Alternate = GPIO_AF7_USART3,
+        };
+
+        HAL_GPIO_Init( GPIOD, &xGpioInit );
+
+        /* Enable GPDMA1 clock for DMA operations */
+        __HAL_RCC_GPDMA1_CLK_ENABLE();
+
+        /* Configure DMA for USART3_RX */
+        static DMA_HandleTypeDef xHndlGpdmaCh6 =
+        {
+            .Instance                  = GPDMA1_Channel6,
+            .Init                      =
+            {
+                .Request               = GPDMA1_REQUEST_USART3_RX,
+                .BlkHWRequest          = DMA_BREQ_SINGLE_BURST,
+                .Direction             = DMA_PERIPH_TO_MEMORY,
+                .SrcInc                = DMA_SINC_FIXED,
+                .DestInc               = DMA_DINC_INCREMENTED,
+                .SrcDataWidth          = DMA_SRC_DATAWIDTH_BYTE,
+                .DestDataWidth         = DMA_DEST_DATAWIDTH_BYTE,
+                .Priority              = DMA_LOW_PRIORITY_HIGH_WEIGHT,
+                .SrcBurstLength        = 1,
+                .DestBurstLength       = 1,
+                .TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0 | DMA_DEST_ALLOCATED_PORT1,
+                .TransferEventMode     = DMA_TCEM_BLOCK_TRANSFER,
+                .Mode                  = DMA_NORMAL,
+            },
+        };
+
+        xResult = HAL_DMA_Init( &xHndlGpdmaCh6 );
+        configASSERT( xResult == HAL_OK );
+
+        if( xResult == HAL_OK )
+        {
+            __HAL_LINKDMA( pxHndlUart, hdmarx, xHndlGpdmaCh6 );
+            xResult = HAL_DMA_ConfigChannelAttributes( &xHndlGpdmaCh6, DMA_CHANNEL_NPRIV );
+            configASSERT( xResult == HAL_OK );
+        }
+
+        /* Enable USART3 interrupt */
+        HAL_NVIC_SetPriority( USART3_IRQn, 5, 0 );
+        HAL_NVIC_EnableIRQ( USART3_IRQn );
+
+        /* Enable DMA interrupt for GPDMA1 Channel 6 */
+        HAL_NVIC_SetPriority( GPDMA1_Channel6_IRQn, 5, 0 );
+        HAL_NVIC_EnableIRQ( GPDMA1_Channel6_IRQn );
+    }
+}
+
+void HAL_UART_MspDeInit( UART_HandleTypeDef * pxHndlUart )
+{
+    configASSERT( pxHndlUart != NULL );
+
+    if( pxHndlUart->Instance == USART3 )
+    {
+        /* Disable peripheral clock */
+        __HAL_RCC_USART3_CLK_DISABLE();
+
+        /* Deinitialize GPIO pins */
+        HAL_GPIO_DeInit( GPIOD, GPIO_PIN_8 | GPIO_PIN_9 );
+
+        /* Deinitialize DMA */
+        if( pxHndlUart->hdmarx != NULL )
+        {
+            HAL_DMA_DeInit( pxHndlUart->hdmarx );
+        }
+    }
 }
 
 void HAL_I2C_MspDeInit( I2C_HandleTypeDef * pxHndlI2c )

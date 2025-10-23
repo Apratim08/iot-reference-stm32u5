@@ -56,30 +56,24 @@ void cellular_net_main( void * pvParameters )
     /* Set APN for Simplex SIM */
     strncpy( xCellularContext.pcApn, "us.simplex.iot", CELLULAR_APN_MAX_LEN - 1 );
 
+    /* Set task handle for this task */
+    xCellularContext.xNetTaskHandle = xTaskGetCurrentTaskHandle();
+
     /* Initialize UART driver */
     if( xCellularUartInit( &( xCellularContext.xUartCtx ) ) != pdTRUE )
     {
         LogError( "Failed to initialize cellular UART" );
-        vTaskDelete( NULL );
-        return;
+        /* Critical failure - enter infinite error loop */
+        for( ; ; )
+        {
+            vTaskDelay( pdMS_TO_TICKS( 60000 ) );
+        }
     }
 
-    /* Create network management task */
-    if( xTaskCreate( prvCellularNetTask,
-                     "CellularNet",
-                     CELLULAR_NET_TASK_STACK_SIZE,
-                     &xCellularContext,
-                     CELLULAR_NET_TASK_PRIORITY,
-                     &( xCellularContext.xNetTaskHandle ) ) != pdPASS )
-    {
-        LogError( "Failed to create cellular network task" );
-        xCellularUartDeinit( &( xCellularContext.xUartCtx ) );
-        vTaskDelete( NULL );
-        return;
-    }
-
-    /* Main task can exit - management task will handle everything */
     LogInfo( "Cellular network service started" );
+
+    /* Run the state machine directly in this task */
+    prvCellularNetTask( &xCellularContext );
 }
 
 BaseType_t cellular_net_request_reconnect( void )

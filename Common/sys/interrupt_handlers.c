@@ -159,6 +159,15 @@ void GPDMA1_Channel5_IRQHandler( void )
     }
 }
 
+void GPDMA1_Channel6_IRQHandler( void )
+{
+    extern UART_HandleTypeDef * pxHndlUart3;
+    if( pxHndlUart3 != NULL && pxHndlUart3->hdmarx != NULL )
+    {
+        HAL_DMA_IRQHandler( pxHndlUart3->hdmarx );
+    }
+}
+
 /* Handle TIM6 interrupt for STM32 HAL time base. */
 void TIM6_IRQHandler( void )
 {

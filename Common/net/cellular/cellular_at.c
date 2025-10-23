@@ -12,9 +12,11 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 /* AT commands*/
 #define AT_CMD_TEST              ""                    /* AT - Test command */
+#define AT_CMD_ECHO_OFF          "E0"                  /* Disable echo */
 #define AT_CMD_GET_IMEI          "+CGSN"               /* Get IMEI */
 #define AT_CMD_GET_ICCID         "+CCID"               /* Get SIM ICCID */
 #define AT_CMD_GET_FW_VER        "I"                   /* Get firmware version */
@@ -60,6 +62,25 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
     /* Ensure UART is not in PPP mode */
     vCellularUartSetPppMode( &( pxCtx->xUartCtx ), pdFALSE );
 
+    /* Flush any stale data from the stream buffer (especially important on retries) */
+    uint8_t ucDummy[ 256 ];
+    size_t xFlushed = 0;
+    while( xCellularUartRecv( &( pxCtx->xUartCtx ), ucDummy, sizeof( ucDummy ), pdMS_TO_TICKS( 100 ) ) == pdTRUE )
+    {
+        xFlushed += sizeof( ucDummy );
+        if( xFlushed > 4096 )  /* Safety limit to prevent infinite loop */
+        {
+            LogWarn( "Flushed %lu bytes from buffer - modem may be stuck", xFlushed );
+            break;
+        }
+    }
+    if( xFlushed > 0 )
+    {
+        LogInfo( "Flushed %lu stale bytes from RX buffer", xFlushed );
+        /* Give the modem a moment to finish any pending output */
+        vTaskDelay( pdMS_TO_TICKS( 500 ) );
+    }
+
     /* Give modem time to boot if it was just powered on */
     vTaskDelay( pdMS_TO_TICKS( 2000 ) );
 
@@ -78,8 +99,19 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
     {
         LogInfo( "Cellular modem responding to AT commands" );
 
-        /* Enable registration URCs */
         char pcResponse[ 128 ];
+
+        /* Disable echo to simplify response parsing */
+        if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+                                    AT_CMD_ECHO_OFF,
+                                    pcResponse,
+                                    sizeof( pcResponse ),
+                                    CELLULAR_DEFAULT_TIMEOUT_MS ) == pdTRUE )
+        {
+            LogInfo( "Modem echo disabled" );
+        }
+
+        /* Enable registration URCs */
         xCellularAtSendCommand( &( pxCtx->xUartCtx ),
                                 AT_CMD_SET_REG_URC,
                                 pcResponse,
@@ -132,6 +164,10 @@ BaseType_t xCellularAtSendCommand( CellularUartCtx_t * pxUartCtx,
             if( xResult == pdTRUE )
             {
                 LogDebug( "RX: %s", pcResponse );
+            }
+            else
+            {
+                LogError( "No response or timeout for command: %s", pcAtCmd );
             }
         }
         else
@@ -423,6 +459,7 @@ static BaseType_t prvWaitForResponse( CellularUartCtx_t * pxUartCtx,
     size_t xBytesRead = 0;
     TickType_t xTimeout = pdMS_TO_TICKS( ulTimeoutMs );
     TickType_t xStartTime = xTaskGetTickCount();
+    BaseType_t xFirstByteReceived = pdFALSE;
 
     memset( pcResponse, 0, xRespLen );
 
@@ -436,9 +473,10 @@ static BaseType_t prvWaitForResponse( CellularUartCtx_t * pxUartCtx,
             pcResponse[ xBytesRead++ ] = ( char ) ucByte;
             pcResponse[ xBytesRead ] = '\0';
 
-            /* Check if we got a complete response (ends with OK, ERROR, or CONNECT) */
-            if( strstr( pcResponse, "\r\nOK\r\n" ) != NULL ||
-                strstr( pcResponse, "\r\nERROR\r\n" ) != NULL ||
+            /* Check if we got a complete response (ends with OK, ERROR, or CONNECT)
+             * Handle both with and without echo (e.g., "AT\r\r\nOK\r\n" or "\r\nOK\r\n") */
+            if( strstr( pcResponse, "OK\r\n" ) != NULL ||
+                strstr( pcResponse, "ERROR\r\n" ) != NULL ||
                 strstr( pcResponse, "CONNECT" ) != NULL )
             {
                 return pdTRUE;

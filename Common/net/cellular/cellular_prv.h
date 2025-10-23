@@ -100,7 +100,7 @@ typedef struct
 {
     UART_HandleTypeDef * pxUartHandle;
     TaskHandle_t xRxTaskHandle;
-    MessageBufferHandle_t xRxBuffer;    /* Receives data from UART ISR */
+    StreamBufferHandle_t xRxBuffer;    /* Receives data from UART ISR */
     SemaphoreHandle_t xTxMutex;
     volatile BaseType_t xPppMode;       /* pdTRUE=PPP mode, pdFALSE=AT mode */
 } CellularUartCtx_t;

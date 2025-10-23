@@ -27,6 +27,7 @@ extern RTC_HandleTypeDef * pxHndlRtc;
 extern SPI_HandleTypeDef * pxHndlSpi2;
 extern TIM_HandleTypeDef * pxHndlTim5;
 extern UART_HandleTypeDef * pxHndlUart1;
+extern UART_HandleTypeDef * pxHndlUart3;
 extern DCACHE_HandleTypeDef * pxHndlDCache;
 extern DMA_HandleTypeDef * pxHndlGpdmaCh4;
 extern DMA_HandleTypeDef * pxHndlGpdmaCh5;

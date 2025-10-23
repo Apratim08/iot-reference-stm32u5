@@ -147,6 +147,25 @@
 /*#define TCP_OVERSIZE              1 */
 /* when allocating buffer for MXCHIP , an header must be provisionned for TX buffers , default is zero */
 #define PBUF_LINK_ENCAPSULATION_HLEN    28
+
+/* ---------- PPP options ---------- */
+/* Enable PPP support for cellular modem connectivity */
+#define PPP_SUPPORT                     1
+#define PPPOS_SUPPORT                   1      /* PPP over serial */
+#define PAP_SUPPORT                     1      /* Password authentication */
+#define CHAP_SUPPORT                    0      /* Challenge handshake auth (not needed for most cellular) */
+#define PPP_IPV4_SUPPORT                1      /* IPv4 over PPP */
+#define PPP_IPV6_SUPPORT                0      /* Disable IPv6 for now */
+#define PPP_NOTIFY_PHASE                1      /* Notify on phase changes */
+#define PPP_INPROC_IRQ_SAFE             1      /* Thread-safe for FreeRTOS */
+
+/* Memory pools for PPP */
+#define MEMP_NUM_PPP_PCB                1      /* Number of PPP control blocks */
+#define MEMP_NUM_PPPOS_INTERFACES       1      /* Number of PPP-over-serial interfaces */
+
+/* sys_jiffies is used by PPP for random number generation */
+#define sys_jiffies sys_now
+
 #endif /* LWIP_HDR_LWIPOPTS_H */
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

@@ -183,6 +183,7 @@ static void vHeartbeatTask( void * pvParameters )
 }
 
 extern void net_main( void * pvParameters );
+extern void cellular_net_main( void * pvParameters );
 extern void vMQTTAgentTask( void * );
 extern void vMotionSensorsPublish( void * );
 extern void vEnvironmentSensorPublishTask( void * );
@@ -232,8 +233,8 @@ void vInitTask( void * pvArgs )
 
     xResult = xTaskCreate( vHeartbeatTask, "Heartbeat", 128, NULL, tskIDLE_PRIORITY, NULL );
     configASSERT( xResult == pdTRUE );
-
-    xResult = xTaskCreate( &net_main, "MxNet", 1024, NULL, 23, NULL );
+    /* Changed the task name from MxNet to CellNet and increased stack size to 2048 bytes*/
+    xResult = xTaskCreate( &cellular_net_main, "CellNet", 2048, NULL, 23, NULL );
     configASSERT( xResult == pdTRUE );
 
     #if DEMO_QUALIFICATION_TEST

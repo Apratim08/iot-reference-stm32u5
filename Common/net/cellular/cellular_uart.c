@@ -59,6 +59,12 @@ BaseType_t xCellularUartInit( CellularUartCtx_t * pxCtx )
     xHuart.Init.HwFlowCtl = UART_HWCONTROL_NONE;
     xHuart.Init.OverSampling = UART_OVERSAMPLING_16;
 
+    /* Configure advanced features - CRITICAL for STM32U5 reliability */
+    xHuart.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+
+    /* Configure FIFO mode - Required for reliable DMA operation on STM32U5 */
+    xHuart.FifoMode = UART_FIFOMODE_ENABLE;
+
     /* Initialize HAL UART */
     if( HAL_UART_Init( &xHuart ) != HAL_OK )
     {
@@ -66,16 +72,24 @@ BaseType_t xCellularUartInit( CellularUartCtx_t * pxCtx )
         return pdFALSE;
     }
 
+    /* Disable UART RX timeout to prevent spurious errors during DMA */
+    __HAL_UART_DISABLE_IT( &xHuart, UART_IT_RTO );
+
+    /* Clear any pending errors from initialization */
+    __HAL_UART_CLEAR_FLAG( &xHuart, UART_CLEAR_PEF | UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_OREF );
+    xHuart.ErrorCode = HAL_UART_ERROR_NONE;
+
     /* Store handle in context and export globally for interrupt handler */
     pxCtx->pxUartHandle = &xHuart;
     pxHndlUart3 = &xHuart;
     pxCtx->xPppMode = pdFALSE;
 
-    /* Create message buffer for RX data (used by both AT and PPP modes) */
-    pxCtx->xRxBuffer = xMessageBufferCreate( CELLULAR_UART_RX_BUFFER_SIZE );
+    /* Create stream buffer for RX data (used by both AT and PPP modes)
+     * Use stream buffer instead of message buffer to allow byte-by-byte reading */
+    pxCtx->xRxBuffer = xStreamBufferCreate( CELLULAR_UART_RX_BUFFER_SIZE, 1 );
     if( pxCtx->xRxBuffer == NULL )
     {
-        LogError( "Failed to create RX message buffer" );
+        LogError( "Failed to create RX stream buffer" );
         HAL_UART_DeInit( &xHuart );
         return pdFALSE;
     }
@@ -85,7 +99,7 @@ BaseType_t xCellularUartInit( CellularUartCtx_t * pxCtx )
     if( pxCtx->xTxMutex == NULL )
     {
         LogError( "Failed to create TX mutex" );
-        vMessageBufferDelete( pxCtx->xRxBuffer );
+        vStreamBufferDelete( pxCtx->xRxBuffer );
         HAL_UART_DeInit( &xHuart );
         return pdFALSE;
     }
@@ -100,7 +114,7 @@ BaseType_t xCellularUartInit( CellularUartCtx_t * pxCtx )
     {
         LogError( "Failed to create RX task" );
         vSemaphoreDelete( pxCtx->xTxMutex );
-        vMessageBufferDelete( pxCtx->xRxBuffer );
+        vStreamBufferDelete( pxCtx->xRxBuffer );
         HAL_UART_DeInit( &xHuart );
         return pdFALSE;
     }
@@ -111,7 +125,7 @@ BaseType_t xCellularUartInit( CellularUartCtx_t * pxCtx )
         LogError( "Failed to start UART DMA reception" );
         vTaskDelete( pxCtx->xRxTaskHandle );
         vSemaphoreDelete( pxCtx->xTxMutex );
-        vMessageBufferDelete( pxCtx->xRxBuffer );
+        vStreamBufferDelete( pxCtx->xRxBuffer );
         HAL_UART_DeInit( &xHuart );
         return pdFALSE;
     }
@@ -155,7 +169,7 @@ BaseType_t xCellularUartDeinit( CellularUartCtx_t * pxCtx )
 
     if( pxCtx->xRxBuffer != NULL )
     {
-        vMessageBufferDelete( pxCtx->xRxBuffer );
+        vStreamBufferDelete( pxCtx->xRxBuffer );
         pxCtx->xRxBuffer = NULL;
     }
 
@@ -207,8 +221,14 @@ BaseType_t xCellularUartRecv( CellularUartCtx_t * pxCtx, uint8_t * pucData, size
         return pdFALSE;
     }
 
-    /* Read from message buffer (populated by RX task) */
-    xBytesRead = xMessageBufferReceive( pxCtx->xRxBuffer, pucData, xLen, xTimeout );
+    if( pxCtx->xRxBuffer == NULL )
+    {
+        LogError( "UartRecv: RX buffer is NULL!" );
+        return pdFALSE;
+    }
+
+    /* Read from stream buffer (populated by RX task) */
+    xBytesRead = xStreamBufferReceive( pxCtx->xRxBuffer, pucData, xLen, xTimeout );
 
     return ( xBytesRead > 0 ) ? pdTRUE : pdFALSE;
 }
@@ -268,7 +288,23 @@ void vCellularUartRxTask( void * pvParameters )
             /* Send to message buffer for processing */
             if( xBytesToRead > 0 )
             {
-                xMessageBufferSend( pxCtx->xRxBuffer, ucTempBuffer, xBytesToRead, 0 );
+                /* Log received data for debugging - show hex dump */
+                char pcHexDump[ 80 ];
+                size_t xHexPos = 0;
+                for( size_t i = 0; i < xBytesToRead && i < 20; i++ )
+                {
+                    xHexPos += snprintf( &pcHexDump[ xHexPos ], sizeof( pcHexDump ) - xHexPos,
+                                        "%02X ", ucTempBuffer[ i ] );
+                }
+                LogInfo( "UART RX: %lu bytes [%s]", xBytesToRead, pcHexDump );
+
+                /* Send to stream buffer - non-blocking for now */
+                size_t xBytesSent = xStreamBufferSend( pxCtx->xRxBuffer, ucTempBuffer, xBytesToRead, 0 );
+
+                if( xBytesSent != xBytesToRead )
+                {
+                    LogError( "StreamBuffer send failed: sent %lu of %lu bytes", xBytesSent, xBytesToRead );
+                }
                 xLastPos = ( xLastPos + xBytesToRead ) % CELLULAR_UART_DMA_BUFFER_SIZE;
             }
         }
@@ -312,10 +348,19 @@ void HAL_UART_ErrorCallback( UART_HandleTypeDef * huart )
 {
     if( huart->Instance == CELLULAR_UART_INSTANCE )
     {
-        LogError( "UART error detected: 0x%lx", huart->ErrorCode );
+        uint32_t ulErrorCode = huart->ErrorCode;
 
-        /* Clear error and restart reception */
+        /* Only log non-framing errors to avoid spam during modem boot */
+        if( ( ulErrorCode & ~HAL_UART_ERROR_FE ) != 0 )
+        {
+            LogError( "UART error detected: 0x%lx", ulErrorCode );
+        }
+
+        /* Clear all error flags */
+        __HAL_UART_CLEAR_FLAG( huart, UART_CLEAR_PEF | UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_OREF );
         huart->ErrorCode = HAL_UART_ERROR_NONE;
+
+        /* Restart DMA reception */
         HAL_UART_Receive_DMA( huart, ucDmaRxBuffer, CELLULAR_UART_DMA_BUFFER_SIZE );
     }
 }

@@ -36,6 +36,8 @@ BaseType_t xCellularPppInit( CellularContext_t * pxCtx )
     }
 
     LogInfo( "Initializing PPP interface..." );
+    LogInfo( "netif addr: %p, output callback: %p, status callback: %p, ctx: %p",
+             &( pxCtx->xPppNetif ), prvPppOutputCallback, prvPppLinkStatusCallback, pxCtx );
 
     /* Create PPP control block */
     pxCtx->pxPppPcb = pppos_create( &( pxCtx->xPppNetif ),
@@ -43,9 +45,11 @@ BaseType_t xCellularPppInit( CellularContext_t * pxCtx )
                                     prvPppLinkStatusCallback,
                                     pxCtx );
 
+    LogInfo( "pppos_create returned: %p", pxCtx->pxPppPcb );
+
     if( pxCtx->pxPppPcb == NULL )
     {
-        LogError( "Failed to create PPP control block" );
+        LogError( "Failed to create PPP control block - likely out of memory or MEMP_NUM_PPP_PCB too low" );
         return pdFALSE;
     }
 
@@ -136,10 +140,10 @@ void vCellularPppTask( void * pvParameters )
     while( 1 )
     {
         /* Read data from UART (with timeout) */
-        size_t xBytesRead = xMessageBufferReceive( pxCtx->xUartCtx.xRxBuffer,
-                                                   ucBuffer,
-                                                   sizeof( ucBuffer ),
-                                                   pdMS_TO_TICKS( 100 ) );
+        size_t xBytesRead = xStreamBufferReceive( pxCtx->xUartCtx.xRxBuffer,
+                                                  ucBuffer,
+                                                  sizeof( ucBuffer ),
+                                                  pdMS_TO_TICKS( 100 ) );
 
         if( xBytesRead > 0 )
         {
