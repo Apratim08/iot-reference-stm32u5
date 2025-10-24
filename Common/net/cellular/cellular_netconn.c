@@ -22,6 +22,8 @@
 typedef enum
 {
     CELLULAR_STATE_INIT = 0,
+    CELLULAR_STATE_LWIP_INIT,
+    CELLULAR_STATE_LWIP_WAIT_READY,
     CELLULAR_STATE_MODEM_POWER_ON,
     CELLULAR_STATE_MODEM_CHECK,
     CELLULAR_STATE_MODEM_CONFIGURE,
@@ -42,6 +44,7 @@ static CellularContext_t xCellularContext;
 
 /* Forward declarations */
 static void prvCellularNetTask( void * pvParameters );
+static void prvLwipReadyCallback( void * pvCtx );
 static const char * prvGetStateName( CellularState_t xState );
 
 void cellular_net_main( void * pvParameters )
@@ -58,6 +61,10 @@ void cellular_net_main( void * pvParameters )
 
     /* Set task handle for this task */
     xCellularContext.xNetTaskHandle = xTaskGetCurrentTaskHandle();
+
+    /* Initialize lwIP TCP/IP stack */
+    LogInfo( "Initializing lwIP TCP/IP stack..." );
+    tcpip_init( prvLwipReadyCallback, &xCellularContext );
 
     /* Initialize UART driver */
     if( xCellularUartInit( &( xCellularContext.xUartCtx ) ) != pdTRUE )
@@ -119,6 +126,27 @@ const char * cellular_net_get_status( void )
 }
 
 /*
+ * lwIP Ready Callback
+ *
+ * Called by tcpip_init() when the TCP/IP thread is ready.
+ * This signals that lwIP memory pools are initialized and PPP can be created.
+ */
+static void prvLwipReadyCallback( void * pvCtx )
+{
+    CellularContext_t * pxCtx = ( CellularContext_t * ) pvCtx;
+
+    LogInfo( "lwIP TCP/IP stack is ready" );
+
+    if( pxCtx->xNetTaskHandle != NULL )
+    {
+        ( void ) xTaskNotifyIndexed( pxCtx->xNetTaskHandle,
+                                     CELLULAR_NET_EVT_IDX,
+                                     CELLULAR_EVT_LWIP_READY,
+                                     eSetBits );
+    }
+}
+
+/*
  * Cellular Network Management Task
  *
  * Main state machine that manages the entire connection lifecycle
@@ -141,7 +169,23 @@ static void prvCellularNetTask( void * pvParameters )
         {
             case CELLULAR_STATE_INIT:
                 pxCtx->xStatus = CELLULAR_STATUS_INITIALIZING;
-                xState = CELLULAR_STATE_MODEM_POWER_ON;
+                xState = CELLULAR_STATE_LWIP_WAIT_READY;
+                break;
+
+            case CELLULAR_STATE_LWIP_WAIT_READY:
+                /* Wait for lwIP to be ready (callback from tcpip_init) */
+                if( xTaskNotifyWaitIndexed( CELLULAR_NET_EVT_IDX,
+                                           0x00,
+                                           CELLULAR_EVT_LWIP_READY,
+                                           &ulNotificationValue,
+                                           portMAX_DELAY ) == pdTRUE )
+                {
+                    if( ulNotificationValue & CELLULAR_EVT_LWIP_READY )
+                    {
+                        LogInfo( "lwIP initialized successfully, proceeding to modem initialization" );
+                        xState = CELLULAR_STATE_MODEM_POWER_ON;
+                    }
+                }
                 break;
 
             case CELLULAR_STATE_MODEM_POWER_ON:
@@ -366,6 +410,8 @@ static const char * prvGetStateName( CellularState_t xState )
     switch( xState )
     {
         case CELLULAR_STATE_INIT:                return "INIT";
+        case CELLULAR_STATE_LWIP_INIT:           return "LWIP_INIT";
+        case CELLULAR_STATE_LWIP_WAIT_READY:     return "LWIP_WAIT_READY";
         case CELLULAR_STATE_MODEM_POWER_ON:      return "MODEM_POWER_ON";
         case CELLULAR_STATE_MODEM_CHECK:         return "MODEM_CHECK";
         case CELLULAR_STATE_MODEM_CONFIGURE:     return "MODEM_CONFIGURE";

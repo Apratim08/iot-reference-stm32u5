@@ -24,9 +24,9 @@
 #define AT_CMD_GET_REG_STATUS    "+CREG?"              /* Get registration status */
 #define AT_CMD_SET_REG_URC       "+CREG=1"             /* Enable registration URCs */
 #define AT_CMD_GET_SIGNAL        "+CSQ"                /* Get signal quality */
-#define AT_CMD_SET_PDP_CONTEXT   "+CGDCONT=1,\"IPV4V6\",\"" /* Set PDP context (IPv4v6 for Simplex) */
+#define AT_CMD_SET_PDP_CONTEXT   "+CGDCONT=1,\"IPV4V6\",\"" /* Set PDP context (matches RPi exactly) */
 #define AT_CMD_ACTIVATE_PDP      "+CGACT=1,1"          /* Activate PDP context */
-#define AT_CMD_START_PPP         "D*99#"               /* Start PPP session */
+#define AT_CMD_START_PPP         "DT*99#"              /* Start PPP session (tone dialing, matches RPi) */
 #define AT_CMD_ESCAPE_SEQ        "+++"                 /* Escape sequence (PPP -> AT) */
 
 /* Response strings */
@@ -84,7 +84,74 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
     /* Give modem time to boot if it was just powered on */
     vTaskDelay( pdMS_TO_TICKS( 2000 ) );
 
-    /* Try to sync with modem */
+    char pcResponse[ 128 ];
+
+    /* CRITICAL: Disable echo IMMEDIATELY without any ready check!
+     * Any command sent before ATE0 will be echoed and buffered by the modem,
+     * causing PPP corruption later. Just keep sending ATE0 until it works.
+     */
+    LogInfo( "Disabling echo (no sync first to avoid buffer corruption)..." );
+    for( int i = 0; i < 10; i++ )
+    {
+        if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+                                    AT_CMD_ECHO_OFF,
+                                    pcResponse,
+                                    sizeof( pcResponse ),
+                                    CELLULAR_DEFAULT_TIMEOUT_MS ) == pdTRUE )
+        {
+            if( strstr( pcResponse, "OK" ) != NULL )
+            {
+                LogInfo( "Modem echo disabled" );
+                xResult = pdTRUE;
+                break;
+            }
+        }
+        vTaskDelay( pdMS_TO_TICKS( 500 ) );
+    }
+
+    if( xResult == pdFALSE )
+    {
+        LogError( "Failed to disable echo" );
+        return pdFALSE;
+    }
+
+    /* CRITICAL: Flush boot URCs that modem sent during power-up!
+     * The SIM7600G sends URCs like RDY, +CPIN, SMS DONE, PB DONE during boot.
+     * These get buffered and corrupt PPP if not flushed.
+     */
+    LogInfo( "Flushing boot URCs..." );
+    vTaskDelay( pdMS_TO_TICKS( 2000 ) );  /* Wait for any late boot URCs */
+
+    uint8_t ucFlushBoot[ 256 ];
+    size_t xBootFlushed = 0;
+    while( xCellularUartRecv( &( pxCtx->xUartCtx ), ucFlushBoot, sizeof( ucFlushBoot ), pdMS_TO_TICKS( 200 ) ) == pdTRUE )
+    {
+        xBootFlushed += 256;
+        if( xBootFlushed > 2048 )
+        {
+            break;
+        }
+    }
+    if( xBootFlushed > 0 )
+    {
+        LogInfo( "Flushed %lu bytes of boot URCs", xBootFlushed );
+    }
+
+    /* Verify echo is actually disabled by sending a test command */
+    vTaskDelay( pdMS_TO_TICKS( 200 ) );
+    if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+                                AT_CMD_TEST,
+                                pcResponse,
+                                sizeof( pcResponse ),
+                                CELLULAR_DEFAULT_TIMEOUT_MS ) != pdTRUE )
+    {
+        LogError( "Echo disable verification failed" );
+        return pdFALSE;
+    }
+    LogInfo( "Echo disable verified" );
+
+    /* Now sync with modem (echo is already OFF) */
+    xResult = pdFALSE;
     for( int i = 0; i < 5; i++ )
     {
         if( xCellularAtCheckModem( pxCtx ) == pdTRUE )
@@ -99,24 +166,9 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
     {
         LogInfo( "Cellular modem responding to AT commands" );
 
-        char pcResponse[ 128 ];
-
-        /* Disable echo to simplify response parsing */
-        if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
-                                    AT_CMD_ECHO_OFF,
-                                    pcResponse,
-                                    sizeof( pcResponse ),
-                                    CELLULAR_DEFAULT_TIMEOUT_MS ) == pdTRUE )
-        {
-            LogInfo( "Modem echo disabled" );
-        }
-
-        /* Enable registration URCs */
-        xCellularAtSendCommand( &( pxCtx->xUartCtx ),
-                                AT_CMD_SET_REG_URC,
-                                pcResponse,
-                                sizeof( pcResponse ),
-                                CELLULAR_DEFAULT_TIMEOUT_MS );
+        /* DON'T enable registration URCs - they will corrupt PPP stream!
+         * We poll registration status instead of relying on URCs.
+         */
     }
     else
     {
@@ -382,8 +434,11 @@ BaseType_t xCellularAtStartPpp( CellularContext_t * pxCtx )
 
     LogInfo( "Starting PPP session..." );
 
+    /* URCs are not enabled, so no need to disable them */
+
+    /* Skip AT+CGACT - RPi doesn't use it, ATD*99# activates PDP automatically */
     /* Activate PDP context first */
-    if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+    /* if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
                                 AT_CMD_ACTIVATE_PDP,
                                 pcResponse,
                                 sizeof( pcResponse ),
@@ -393,7 +448,7 @@ BaseType_t xCellularAtStartPpp( CellularContext_t * pxCtx )
         {
             LogWarn( "PDP activation failed, continuing anyway" );
         }
-    }
+    } */
 
     /* Start PPP with ATD*99# */
     if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
@@ -405,7 +460,13 @@ BaseType_t xCellularAtStartPpp( CellularContext_t * pxCtx )
         /* Look for CONNECT response */
         if( strstr( pcResponse, AT_RESP_CONNECT ) != NULL )
         {
-            LogInfo( "PPP session started - switching UART to PPP mode" );
+            LogInfo( "CONNECT received - modem in PPP data mode" );
+
+            /* Brief settling delay to allow modem firmware to stabilize
+             * before we start PPP processing. Without this, the modem's
+             * firmware may trigger renegotiation immediately.
+             */
+            vTaskDelay( pdMS_TO_TICKS( 100 ) );
 
             /* Switch UART to PPP mode - no more AT commands! */
             vCellularUartSetPppMode( &( pxCtx->xUartCtx ), pdTRUE );

@@ -32,6 +32,17 @@
 /* #define MEM_DEBUG         LWIP_DBG_ON */
 /*#define PBUF_DEBUG          LWIP_DBG_ON */
 
+/* Enable PPP debugging (uncomment to debug PPP issues) */
+#define LWIP_DEBUG        1
+#define PPP_DEBUG         LWIP_DBG_ON
+#define IPCP_DEBUG        LWIP_DBG_ON
+
+/* PPP FSM timeouts - reduce from default 6s to 3s for faster negotiation
+ * The 6-second default timeout causes the SIM7600G modem to enter a confused
+ * state where it buffers AT responses and triggers unwanted renegotiation.
+ */
+#define FSM_DEFTIMEOUT    3  /* Timeout in seconds (default: 6) */
+
 /*#define LWIP_IPV6                       1 */
 /*#define LWIP_IPV6_DHCP6                 1 */
 #define LWIP_DHCP                             1
@@ -153,11 +164,14 @@
 #define PPP_SUPPORT                     1
 #define PPPOS_SUPPORT                   1      /* PPP over serial */
 #define PAP_SUPPORT                     1      /* Password authentication */
-#define CHAP_SUPPORT                    0      /* Challenge handshake auth (not needed for most cellular) */
+#define CHAP_SUPPORT                    1      /* Challenge handshake auth (SIM7600G may request CHAP) */
 #define PPP_IPV4_SUPPORT                1      /* IPv4 over PPP */
 #define PPP_IPV6_SUPPORT                0      /* Disable IPv6 for now */
 #define PPP_NOTIFY_PHASE                1      /* Notify on phase changes */
 #define PPP_INPROC_IRQ_SAFE             1      /* Thread-safe for FreeRTOS */
+
+/* Disable VJ compression for cellular modems (many don't support it) */
+#define VJ_SUPPORT                      0      /* Disable Van Jacobson header compression */
 
 /* Memory pools for PPP */
 #define MEMP_NUM_PPP_PCB                1      /* Number of PPP control blocks */

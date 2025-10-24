@@ -39,11 +39,12 @@ extern "C" {
 #define CELLULAR_NET_EVT_IDX              0x0
 
 /* Network event bits */
-#define CELLULAR_EVT_PPP_READY            ( 1 << 0 )
-#define CELLULAR_EVT_CONNECTED            ( 1 << 1 )
-#define CELLULAR_EVT_DISCONNECTED         ( 1 << 2 )
-#define CELLULAR_EVT_IP_ACQUIRED          ( 1 << 3 )
-#define CELLULAR_EVT_RECONNECT_REQ        ( 1 << 4 )
+#define CELLULAR_EVT_LWIP_READY           ( 1 << 0 )
+#define CELLULAR_EVT_PPP_READY            ( 1 << 1 )
+#define CELLULAR_EVT_CONNECTED            ( 1 << 2 )
+#define CELLULAR_EVT_DISCONNECTED         ( 1 << 3 )
+#define CELLULAR_EVT_IP_ACQUIRED          ( 1 << 4 )
+#define CELLULAR_EVT_RECONNECT_REQ        ( 1 << 5 )
 
 /* PPP Buffer sizes */
 #define CELLULAR_PPP_TX_QUEUE_LEN         10
@@ -123,6 +124,7 @@ typedef struct
     struct netif xPppNetif;
     void * pxPppPcb;                    /* PPP control block (ppp_pcb) */
     TaskHandle_t xPppTaskHandle;        /* Task bridging UART <-> lwIP PPP */
+    volatile BaseType_t xPppTaskExit;   /* Flag to signal PPP task to exit */
 
     /* Optional diagnostics */
     CellularModemInfo_t xModemInfo;

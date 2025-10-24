@@ -13,8 +13,10 @@
 
 /* lwIP PPP includes */
 #include "lwip/tcpip.h"
+#include "lwip/ip_addr.h"
 #include "netif/ppp/ppp.h"
 #include "netif/ppp/pppos.h"
+#include "netif/ppp/pppapi.h"
 #include "lwip/dns.h"
 
 #include <string.h>
@@ -39,11 +41,11 @@ BaseType_t xCellularPppInit( CellularContext_t * pxCtx )
     LogInfo( "netif addr: %p, output callback: %p, status callback: %p, ctx: %p",
              &( pxCtx->xPppNetif ), prvPppOutputCallback, prvPppLinkStatusCallback, pxCtx );
 
-    /* Create PPP control block */
-    pxCtx->pxPppPcb = pppos_create( &( pxCtx->xPppNetif ),
-                                    prvPppOutputCallback,
-                                    prvPppLinkStatusCallback,
-                                    pxCtx );
+    /* Create PPP control block (thread-safe via pppapi) */
+    pxCtx->pxPppPcb = pppapi_pppos_create( &( pxCtx->xPppNetif ),
+                                           prvPppOutputCallback,
+                                           prvPppLinkStatusCallback,
+                                           pxCtx );
 
     LogInfo( "pppos_create returned: %p", pxCtx->pxPppPcb );
 
@@ -53,11 +55,21 @@ BaseType_t xCellularPppInit( CellularContext_t * pxCtx )
         return pdFALSE;
     }
 
-    /* Set PPP authentication (usually not needed for cellular) */
-    ppp_set_auth( ( ppp_pcb * ) pxCtx->pxPppPcb, PPPAUTHTYPE_NONE, "", "" );
+    ppp_pcb * pxPppPcb = ( ppp_pcb * ) pxCtx->pxPppPcb;
+
+    /* Set PPP authentication
+     * Cellular networks typically don't require credentials (SIM-based auth),
+     * but some modems request PAP/CHAP during negotiation with empty credentials.
+     * Using PPPAUTHTYPE_ANY allows lwIP to accept whatever the modem requests.
+     */
+    ppp_set_auth( pxPppPcb, PPPAUTHTYPE_ANY, "", "" );
+
+    /* Use lwIP's default IPCP configuration
+     * Note: "Could not determine remote IP address: defaulting to 10.64.64.64"
+     * is normal - RPi shows the same warning and works fine
+     */
 
     /* Set default route through this interface */
-    ppp_pcb * pxPppPcb = ( ppp_pcb * ) pxCtx->pxPppPcb;
     ppp_set_default( pxPppPcb );
 
     LogInfo( "PPP interface initialized" );
@@ -75,8 +87,11 @@ BaseType_t xCellularPppStart( CellularContext_t * pxCtx )
 
     LogInfo( "Starting PPP connection..." );
 
-    /* Start PPP session */
-    err_t err = ppp_connect( ( ppp_pcb * ) pxCtx->pxPppPcb, 0 );
+    /* Clear exit flag */
+    pxCtx->xPppTaskExit = pdFALSE;
+
+    /* Start PPP session (thread-safe via pppapi) */
+    err_t err = pppapi_connect( ( ppp_pcb * ) pxCtx->pxPppPcb, 0 );
     if( err != ERR_OK )
     {
         LogError( "Failed to start PPP connection: %d", err );
@@ -108,15 +123,30 @@ BaseType_t xCellularPppStop( CellularContext_t * pxCtx )
 
     LogInfo( "Stopping PPP connection..." );
 
-    /* Delete PPP task first */
+    /* Signal PPP task to exit gracefully */
     if( pxCtx->xPppTaskHandle != NULL )
     {
-        vTaskDelete( pxCtx->xPppTaskHandle );
+        pxCtx->xPppTaskExit = pdTRUE;
+
+        /* Wait for task to exit (up to 1 second) */
+        uint32_t ulWaitCount = 0;
+        while( eTaskGetState( pxCtx->xPppTaskHandle ) != eDeleted && ulWaitCount < 100 )
+        {
+            vTaskDelay( pdMS_TO_TICKS( 10 ) );
+            ulWaitCount++;
+        }
+
+        if( eTaskGetState( pxCtx->xPppTaskHandle ) != eDeleted )
+        {
+            LogWarn( "PPP task did not exit gracefully, force deleting" );
+            vTaskDelete( pxCtx->xPppTaskHandle );
+        }
+
         pxCtx->xPppTaskHandle = NULL;
     }
 
-    /* Close PPP session */
-    ppp_close( ( ppp_pcb * ) pxCtx->pxPppPcb, 0 );
+    /* Close PPP session (thread-safe via pppapi) */
+    pppapi_close( ( ppp_pcb * ) pxCtx->pxPppPcb, 0 );
 
     /* Small delay to allow PPP to terminate cleanly */
     vTaskDelay( pdMS_TO_TICKS( 500 ) );
@@ -137,7 +167,7 @@ void vCellularPppTask( void * pvParameters )
 
     LogInfo( "PPP bridge task started" );
 
-    while( 1 )
+    while( pxCtx->xPppTaskExit == pdFALSE )
     {
         /* Read data from UART (with timeout) */
         size_t xBytesRead = xStreamBufferReceive( pxCtx->xUartCtx.xRxBuffer,
@@ -154,6 +184,11 @@ void vCellularPppTask( void * pvParameters )
         /* Yield to other tasks periodically */
         taskYIELD();
     }
+
+    LogInfo( "PPP bridge task exiting" );
+
+    /* Task will self-delete */
+    vTaskDelete( NULL );
 }
 
 /*
