@@ -1,7 +1,7 @@
 /*
  * Cellular AT Command Implementation
  *
- * AT command handler for SIM7600G modem with Simplex SIM
+ * AT command handler for Sierra Wireless HL7810 (not SIM7600G anymore)
  */
 
 #include "logging_levels.h"
@@ -14,9 +14,16 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+/* AT commands for sierra */
+/* AT_CFUN , AT_CFUN=1, AT+COPS=0, */
+/* AT+KSRAT=0, AT+CGDCONT=1,"IP","data.mono" <-- APN */
+/* signal strength - AT%MEAS="8" */
+
 /* AT commands*/
 #define AT_CMD_TEST              ""                    /* AT - Test command */
 #define AT_CMD_ECHO_OFF          "E0"                  /* Disable echo */
+#define AT_CMD_CFUN              "+CFUN=1"             /* Enable radio functionality */
+#define AT_CMD_COPS              "+COPS=0"             /* Automatic network selection */
 #define AT_CMD_GET_IMEI          "+CGSN"               /* Get IMEI */
 #define AT_CMD_GET_ICCID         "+CCID"               /* Get SIM ICCID */
 #define AT_CMD_GET_FW_VER        "I"                   /* Get firmware version */
@@ -24,7 +31,7 @@
 #define AT_CMD_GET_REG_STATUS    "+CREG?"              /* Get registration status */
 #define AT_CMD_SET_REG_URC       "+CREG=1"             /* Enable registration URCs */
 #define AT_CMD_GET_SIGNAL        "+CSQ"                /* Get signal quality */
-#define AT_CMD_SET_PDP_CONTEXT   "+CGDCONT=1,\"IPV4V6\",\"" /* Set PDP context (matches RPi exactly) */
+#define AT_CMD_SET_PDP_CONTEXT   "+CGDCONT=1,\"IP\",\""     /* Set PDP context */
 #define AT_CMD_ACTIVATE_PDP      "+CGACT=1,1"          /* Activate PDP context */
 #define AT_CMD_START_PPP         "DT*99#"              /* Start PPP session (tone dialing, matches RPi) */
 #define AT_CMD_ESCAPE_SEQ        "+++"                 /* Escape sequence (PPP -> AT) */
@@ -113,6 +120,39 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
     {
         LogError( "Failed to disable echo" );
         return pdFALSE;
+    }
+
+    /* Enable radio functionality (Sierra Wireless requirement) */
+    LogInfo( "Enabling radio functionality..." );
+    if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+                                AT_CMD_CFUN,
+                                pcResponse,
+                                sizeof( pcResponse ),
+                                5000 ) == pdTRUE )  /* CFUN can take a few seconds */
+    {
+        if( prvCheckResponseOk( pcResponse ) )
+        {
+            LogInfo( "Radio enabled" );
+        }
+        else
+        {
+            LogWarn( "Radio enable returned non-OK response, continuing anyway" );
+        }
+    }
+    vTaskDelay( pdMS_TO_TICKS( 1000 ) );  /* Allow radio to stabilize */
+
+    /* Set automatic network selection */
+    LogInfo( "Setting automatic network selection..." );
+    if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+                                AT_CMD_COPS,
+                                pcResponse,
+                                sizeof( pcResponse ),
+                                CELLULAR_DEFAULT_TIMEOUT_MS ) == pdTRUE )
+    {
+        if( prvCheckResponseOk( pcResponse ) )
+        {
+            LogInfo( "Network selection set to automatic" );
+        }
     }
 
     /* CRITICAL: Flush boot URCs that modem sent during power-up!

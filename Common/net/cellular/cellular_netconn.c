@@ -56,8 +56,8 @@ void cellular_net_main( void * pvParameters )
     /* Initialize context */
     memset( &xCellularContext, 0, sizeof( CellularContext_t ) );
 
-    /* Set APN for Simplex SIM */
-    strncpy( xCellularContext.pcApn, "us.simplex.iot", CELLULAR_APN_MAX_LEN - 1 );
+    /* Set APN for Sierra Wireless modem */
+    strncpy( xCellularContext.pcApn, "data.mono", CELLULAR_APN_MAX_LEN - 1 );
 
     /* Set task handle for this task */
     xCellularContext.xNetTaskHandle = xTaskGetCurrentTaskHandle();
