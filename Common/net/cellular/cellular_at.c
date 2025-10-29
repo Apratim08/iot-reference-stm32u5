@@ -66,8 +66,66 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
 
     LogInfo( "Initializing cellular AT command interface" );
 
+    /* === SIMPLE UART TEST - Bypass all complexity === */
+    LogInfo( "=== STARTING SIMPLE UART TEST ===" );
+
     /* Ensure UART is not in PPP mode */
     vCellularUartSetPppMode( &( pxCtx->xUartCtx ), pdFALSE );
+
+    /* Wait for modem to boot */
+    vTaskDelay( pdMS_TO_TICKS( 5000 ) );
+
+    /* Send simple AT command */
+    const char * pcTestCmd = "AT\r\n";
+    LogInfo( "Sending: AT" );
+
+    /* Send via UART (should work) */
+    if( xCellularUartSend( &( pxCtx->xUartCtx ), (const uint8_t*)pcTestCmd, strlen(pcTestCmd) ) != pdTRUE )
+    {
+        LogError( "xCellularUartSend failed" );
+    }
+    else
+    {
+        LogInfo( "Transmit OK, waiting for response..." );
+
+        /* Wait for modem to respond */
+        vTaskDelay( pdMS_TO_TICKS( 1000 ) );
+
+        /* Try to receive from stream buffer (where DMA puts the data) */
+        uint8_t ucRxBuf[128];
+        memset(ucRxBuf, 0, sizeof(ucRxBuf));
+
+        size_t xBytesReceived = xStreamBufferReceive( pxCtx->xUartCtx.xRxBuffer,
+                                                       ucRxBuf,
+                                                       sizeof(ucRxBuf) - 1,
+                                                       pdMS_TO_TICKS( 1000 ) );
+
+        LogInfo( "Received %lu bytes from stream buffer", xBytesReceived );
+
+        if( xBytesReceived > 0 )
+        {
+            /* Null terminate for string printing */
+            ucRxBuf[xBytesReceived] = '\0';
+            LogInfo( "Received string: [%s]", ucRxBuf );
+
+            /* Show raw bytes */
+            LogInfo( "Raw hex dump:" );
+            for(size_t i = 0; i < xBytesReceived && i < 64; i++)
+            {
+                LogInfo( "  [%02lu] = 0x%02X (%c)", i, ucRxBuf[i],
+                         (ucRxBuf[i] >= 32 && ucRxBuf[i] < 127) ? ucRxBuf[i] : '.' );
+            }
+        }
+        else
+        {
+            LogError( "No data received from stream buffer" );
+        }
+    }
+
+    LogInfo( "=== END SIMPLE UART TEST ===" );
+    LogInfo( "Continuing with normal initialization..." );
+
+    /* === END SIMPLE TEST === */
 
     /* Flush any stale data from the stream buffer (especially important on retries) */
     uint8_t ucDummy[ 256 ];
