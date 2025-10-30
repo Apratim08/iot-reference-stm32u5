@@ -18,15 +18,12 @@
 #define AT_CMD_TEST              ""                    /* AT - Test command */
 #define AT_CMD_ECHO_OFF          "E0"                  /* Disable echo */
 #define AT_CMD_GET_IMEI          "+CGSN"               /* Get IMEI */
-#define AT_CMD_GET_ICCID         "+CCID"               /* Get SIM ICCID */
 #define AT_CMD_GET_FW_VER        "I"                   /* Get firmware version */
 #define AT_CMD_CHECK_SIM         "+CPIN?"              /* Check SIM status */
 #define AT_CMD_GET_REG_STATUS    "+CREG?"              /* Get registration status */
-#define AT_CMD_SET_REG_URC       "+CREG=1"             /* Enable registration URCs */
 #define AT_CMD_GET_SIGNAL        "+CSQ"                /* Get signal quality */
 #define AT_CMD_SET_PDP_CONTEXT   "+CGDCONT=1,\"IPV4V6\",\"" /* Set PDP context (matches RPi exactly) */
-#define AT_CMD_ACTIVATE_PDP      "+CGACT=1,1"          /* Activate PDP context */
-#define AT_CMD_START_PPP         "DT*99#"              /* Start PPP session (tone dialing, matches RPi) */
+#define AT_CMD_START_PPP         "DT*99#"              /* Start PPP session (matches RPi5) */
 #define AT_CMD_ESCAPE_SEQ        "+++"                 /* Escape sequence (PPP -> AT) */
 
 /* Response strings */
@@ -86,7 +83,61 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
 
     char pcResponse[ 128 ];
 
-    /* CRITICAL: Disable echo IMMEDIATELY without any ready check!
+    /* CRITICAL: Reset modem with ATZ (matches RPi5 chat script)
+     * This clears the modem's internal message buffer, including boot URCs
+     * (RDY, +CPIN: READY) that would otherwise be dumped during PPP transition.
+     */
+    LogInfo( "Resetting modem (ATZ) to clear internal buffers..." );
+    for( int i = 0; i < 5; i++ )
+    {
+        if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+                                    "Z",  /* ATZ command */
+                                    pcResponse,
+                                    sizeof( pcResponse ),
+                                    CELLULAR_DEFAULT_TIMEOUT_MS ) == pdTRUE )
+        {
+            if( strstr( pcResponse, "OK" ) != NULL )
+            {
+                LogInfo( "Modem reset successful" );
+                xResult = pdTRUE;
+                break;
+            }
+        }
+        vTaskDelay( pdMS_TO_TICKS( 500 ) );
+    }
+
+    if( xResult == pdFALSE )
+    {
+        LogWarn( "ATZ failed, continuing anyway" );
+    }
+
+    /* Wait for modem to complete reset */
+    vTaskDelay( pdMS_TO_TICKS( 1000 ) );
+
+    /* CRITICAL: Flush boot URCs that arrived during ATZ/modem boot
+     * The modem sends boot URCs (RDY, +CPIN: READY) when it finishes booting.
+     * These may arrive AFTER we sent ATZ but BEFORE it responded.
+     * They're sitting in our stream buffer and will corrupt PPP if not flushed.
+     */
+    LogInfo( "Flushing boot URCs after ATZ..." );
+    uint8_t ucBootFlush[ 256 ];
+    size_t xBootFlushed = 0;
+    while( xCellularUartRecv( &( pxCtx->xUartCtx ), ucBootFlush, sizeof( ucBootFlush ), pdMS_TO_TICKS( 200 ) ) == pdTRUE )
+    {
+        xBootFlushed += sizeof( ucBootFlush );
+        if( xBootFlushed > 2048 )
+        {
+            LogWarn( "Flushed %lu bytes after ATZ - modem may be chatty", xBootFlushed );
+            break;
+        }
+    }
+    if( xBootFlushed > 0 )
+    {
+        LogInfo( "Flushed %lu bytes of boot URCs after ATZ", xBootFlushed );
+    }
+
+    /* Now disable echo (RPi5 uses ATE1, we use ATE0)
+     * CRITICAL: Disable echo IMMEDIATELY without any ready check!
      * Any command sent before ATE0 will be echoed and buffered by the modem,
      * causing PPP corruption later. Just keep sending ATE0 until it works.
      */
@@ -115,67 +166,23 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
         return pdFALSE;
     }
 
-    /* CRITICAL: Flush boot URCs that modem sent during power-up!
-     * The SIM7600G sends URCs like RDY, +CPIN, SMS DONE, PB DONE during boot.
-     * These get buffered and corrupt PPP if not flushed.
-     */
-    LogInfo( "Flushing boot URCs..." );
-    vTaskDelay( pdMS_TO_TICKS( 2000 ) );  /* Wait for any late boot URCs */
-
-    uint8_t ucFlushBoot[ 256 ];
-    size_t xBootFlushed = 0;
-    while( xCellularUartRecv( &( pxCtx->xUartCtx ), ucFlushBoot, sizeof( ucFlushBoot ), pdMS_TO_TICKS( 200 ) ) == pdTRUE )
-    {
-        xBootFlushed += 256;
-        if( xBootFlushed > 2048 )
-        {
-            break;
-        }
-    }
-    if( xBootFlushed > 0 )
-    {
-        LogInfo( "Flushed %lu bytes of boot URCs", xBootFlushed );
-    }
-
-    /* Verify echo is actually disabled by sending a test command */
-    vTaskDelay( pdMS_TO_TICKS( 200 ) );
+    /* Enable radio functionality (critical for SIM7600G) */
+    LogInfo( "Enabling radio functionality..." );
     if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
-                                AT_CMD_TEST,
+                                "+CFUN=1",
                                 pcResponse,
                                 sizeof( pcResponse ),
-                                CELLULAR_DEFAULT_TIMEOUT_MS ) != pdTRUE )
+                                5000 ) == pdTRUE )
     {
-        LogError( "Echo disable verification failed" );
-        return pdFALSE;
-    }
-    LogInfo( "Echo disable verified" );
-
-    /* Now sync with modem (echo is already OFF) */
-    xResult = pdFALSE;
-    for( int i = 0; i < 5; i++ )
-    {
-        if( xCellularAtCheckModem( pxCtx ) == pdTRUE )
+        if( prvCheckResponseOk( pcResponse ) )
         {
-            xResult = pdTRUE;
-            break;
+            LogInfo( "Radio enabled" );
         }
-        vTaskDelay( pdMS_TO_TICKS( 1000 ) );
     }
+    vTaskDelay( pdMS_TO_TICKS( 1000 ) );  /* Allow radio to stabilize */
 
-    if( xResult == pdTRUE )
-    {
-        LogInfo( "Cellular modem responding to AT commands" );
-
-        /* DON'T enable registration URCs - they will corrupt PPP stream!
-         * We poll registration status instead of relying on URCs.
-         */
-    }
-    else
-    {
-        LogError( "Failed to communicate with cellular modem" );
-    }
-
-    return xResult;
+    LogInfo( "Cellular modem initialized (minimal sequence)" );
+    return pdTRUE;
 }
 
 BaseType_t xCellularAtSendCommand( CellularUartCtx_t * pxUartCtx,
@@ -434,23 +441,8 @@ BaseType_t xCellularAtStartPpp( CellularContext_t * pxCtx )
 
     LogInfo( "Starting PPP session..." );
 
-    /* URCs are not enabled, so no need to disable them */
-
-    /* Skip AT+CGACT - RPi doesn't use it, ATD*99# activates PDP automatically */
-    /* Activate PDP context first */
-    /* if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
-                                AT_CMD_ACTIVATE_PDP,
-                                pcResponse,
-                                sizeof( pcResponse ),
-                                CELLULAR_DEFAULT_TIMEOUT_MS ) == pdTRUE )
-    {
-        if( !prvCheckResponseOk( pcResponse ) )
-        {
-            LogWarn( "PDP activation failed, continuing anyway" );
-        }
-    } */
-
-    /* Start PPP with ATD*99# */
+    /* Minimal commands - match working manual sequence
+     * No URC disables, no diagnostics, just start PPP with ATD*99# */
     if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
                                 AT_CMD_START_PPP,
                                 pcResponse,
@@ -462,11 +454,42 @@ BaseType_t xCellularAtStartPpp( CellularContext_t * pxCtx )
         {
             LogInfo( "CONNECT received - modem in PPP data mode" );
 
-            /* Brief settling delay to allow modem firmware to stabilize
-             * before we start PPP processing. Without this, the modem's
-             * firmware may trigger renegotiation immediately.
+            /* Flush any residual AT response data from stream buffer.
+             * The SIM7600G dumps its internal message buffer ~120ms after CONNECT.
+             * We must wait for this dump and flush it before starting PPP.
              */
-            vTaskDelay( pdMS_TO_TICKS( 100 ) );
+            uint8_t ucFlushBuf[ 256 ];
+            size_t xFlushed;
+            size_t xTotalFlushed = 0;
+
+            /* Wait for modem to dump its internal buffer (empirically ~120ms) */
+            vTaskDelay( pdMS_TO_TICKS( 200 ) );
+
+            /* Aggressive flush loop to catch all buffered data */
+            do {
+                xFlushed = xStreamBufferReceive( pxCtx->xUartCtx.xRxBuffer,
+                                                  ucFlushBuf,
+                                                  sizeof( ucFlushBuf ),
+                                                  pdMS_TO_TICKS( 300 ) );
+                if( xFlushed > 0 )
+                {
+                    xTotalFlushed += xFlushed;
+
+                    /* Log for debugging */
+                    char pcHexDump[ 80 ];
+                    size_t xHexPos = 0;
+                    for( size_t i = 0; i < xFlushed && i < 20; i++ )
+                    {
+                        xHexPos += snprintf( &pcHexDump[ xHexPos ],
+                                            sizeof( pcHexDump ) - xHexPos,
+                                            "%02X ", ucFlushBuf[ i ] );
+                    }
+                    LogWarn( "Flushed %lu bytes: [%s]%s", xFlushed, pcHexDump,
+                             xFlushed > 20 ? "..." : "" );
+                }
+            } while( xFlushed > 0 && xTotalFlushed < 2048 );
+
+            LogInfo( "Flushed %lu total bytes before PPP", xTotalFlushed );
 
             /* Switch UART to PPP mode - no more AT commands! */
             vCellularUartSetPppMode( &( pxCtx->xUartCtx ), pdTRUE );
@@ -486,6 +509,36 @@ BaseType_t xCellularAtStopPpp( CellularContext_t * pxCtx )
 {
     LogInfo( "Stopping PPP session..." );
 
+    /* CRITICAL: Switch to AT mode BEFORE sending escape sequence
+     * The escape sequence (++++) requires 1 second of silence before/after.
+     * If the PPP task is still feeding data during guard time, the modem
+     * won't recognize the escape sequence. We must stop PPP traffic first.
+     */
+    vCellularUartSetPppMode( &( pxCtx->xUartCtx ), pdFALSE );
+
+    /* Wait for any in-flight PPP data to finish transmitting */
+    vTaskDelay( pdMS_TO_TICKS( 200 ) );
+
+    /* Flush stream buffer to discard any PPP frames */
+    uint8_t ucFlushBuf[ 256 ];
+    size_t xFlushed = 0;
+    while( xStreamBufferReceive( pxCtx->xUartCtx.xRxBuffer,
+                                  ucFlushBuf,
+                                  sizeof( ucFlushBuf ),
+                                  pdMS_TO_TICKS( 100 ) ) > 0 )
+    {
+        xFlushed += sizeof( ucFlushBuf );
+        if( xFlushed > 2048 )
+        {
+            break;
+        }
+    }
+
+    if( xFlushed > 0 )
+    {
+        LogInfo( "Flushed %lu bytes of PPP data before escape", xFlushed );
+    }
+
     /* Send escape sequence to exit PPP mode */
     vTaskDelay( pdMS_TO_TICKS( 1000 ) );  /* Guard time before +++ */
 
@@ -495,14 +548,15 @@ BaseType_t xCellularAtStopPpp( CellularContext_t * pxCtx )
     {
         vTaskDelay( pdMS_TO_TICKS( 1000 ) );  /* Guard time after +++ */
 
-        /* Switch back to AT command mode */
-        vCellularUartSetPppMode( &( pxCtx->xUartCtx ), pdFALSE );
-
         /* Verify we're back in AT mode */
         if( xCellularAtCheckModem( pxCtx ) == pdTRUE )
         {
             LogInfo( "Returned to AT command mode" );
             return pdTRUE;
+        }
+        else
+        {
+            LogWarn( "Modem not responding after escape sequence" );
         }
     }
 

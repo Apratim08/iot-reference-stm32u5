@@ -90,15 +90,11 @@ BaseType_t xCellularPppStart( CellularContext_t * pxCtx )
     /* Clear exit flag */
     pxCtx->xPppTaskExit = pdFALSE;
 
-    /* Start PPP session (thread-safe via pppapi) */
-    err_t err = pppapi_connect( ( ppp_pcb * ) pxCtx->pxPppPcb, 0 );
-    if( err != ERR_OK )
-    {
-        LogError( "Failed to start PPP connection: %d", err );
-        return pdFALSE;
-    }
-
-    /* Create PPP bridge task */
+    /* CRITICAL: Create PPP bridge task BEFORE starting PPP connection
+     * The task feeds RX data from UART to lwIP via pppos_input().
+     * If we start PPP negotiation before the task exists, we may miss
+     * early LCP frames from the modem, causing negotiation to fail.
+     */
     if( xTaskCreate( vCellularPppTask,
                      "CellularPpp",
                      CELLULAR_PPP_TASK_STACK_SIZE,
@@ -107,7 +103,27 @@ BaseType_t xCellularPppStart( CellularContext_t * pxCtx )
                      &( pxCtx->xPppTaskHandle ) ) != pdPASS )
     {
         LogError( "Failed to create PPP task" );
-        ppp_close( ( ppp_pcb * ) pxCtx->pxPppPcb, 0 );
+        return pdFALSE;
+    }
+
+    /* Give the task time to start and begin monitoring RX buffer */
+    vTaskDelay( pdMS_TO_TICKS( 50 ) );
+
+    /* Now start PPP session (thread-safe via pppapi) */
+    err_t err = pppapi_connect( ( ppp_pcb * ) pxCtx->pxPppPcb, 0 );
+    if( err != ERR_OK )
+    {
+        LogError( "Failed to start PPP connection: %d", err );
+
+        /* Clean up the task we just created */
+        pxCtx->xPppTaskExit = pdTRUE;
+        vTaskDelay( pdMS_TO_TICKS( 100 ) );
+        if( pxCtx->xPppTaskHandle != NULL )
+        {
+            vTaskDelete( pxCtx->xPppTaskHandle );
+            pxCtx->xPppTaskHandle = NULL;
+        }
+
         return pdFALSE;
     }
 

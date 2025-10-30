@@ -274,38 +274,97 @@ void vCellularUartRxTask( void * pvParameters )
                                sizeof( ucTempBuffer ) : xBytesAvailable;
 
                 memcpy( ucTempBuffer, &ucDmaRxBuffer[ xLastPos ], xBytesToRead );
-            }
-            else
-            {
-                /* Wraparound - read to end of buffer first */
-                xBytesAvailable = CELLULAR_UART_DMA_BUFFER_SIZE - xLastPos;
-                xBytesToRead = ( xBytesAvailable > sizeof( ucTempBuffer ) ) ?
-                               sizeof( ucTempBuffer ) : xBytesAvailable;
 
-                memcpy( ucTempBuffer, &ucDmaRxBuffer[ xLastPos ], xBytesToRead );
-            }
-
-            /* Send to message buffer for processing */
-            if( xBytesToRead > 0 )
-            {
-                /* Log received data for debugging - show hex dump */
-                char pcHexDump[ 80 ];
-                size_t xHexPos = 0;
-                for( size_t i = 0; i < xBytesToRead && i < 20; i++ )
-                {
-                    xHexPos += snprintf( &pcHexDump[ xHexPos ], sizeof( pcHexDump ) - xHexPos,
-                                        "%02X ", ucTempBuffer[ i ] );
-                }
-                LogInfo( "UART RX: %lu bytes [%s]", xBytesToRead, pcHexDump );
-
-                /* Send to stream buffer - non-blocking for now */
+                /* Send to stream buffer */
                 size_t xBytesSent = xStreamBufferSend( pxCtx->xRxBuffer, ucTempBuffer, xBytesToRead, 0 );
 
                 if( xBytesSent != xBytesToRead )
                 {
-                    LogError( "StreamBuffer send failed: sent %lu of %lu bytes", xBytesSent, xBytesToRead );
+                    LogError( "StreamBuffer overflow: lost %lu bytes", xBytesToRead - xBytesSent );
+                    /* Don't advance xLastPos beyond what was actually sent to avoid data corruption */
+                    xLastPos = ( xLastPos + xBytesSent ) % CELLULAR_UART_DMA_BUFFER_SIZE;
                 }
-                xLastPos = ( xLastPos + xBytesToRead ) % CELLULAR_UART_DMA_BUFFER_SIZE;
+                else
+                {
+                    /* Log received data for debugging - show hex dump */
+                    char pcHexDump[ 80 ];
+                    size_t xHexPos = 0;
+                    for( size_t i = 0; i < xBytesToRead && i < 20; i++ )
+                    {
+                        xHexPos += snprintf( &pcHexDump[ xHexPos ], sizeof( pcHexDump ) - xHexPos,
+                                            "%02X ", ucTempBuffer[ i ] );
+                    }
+                    LogInfo( "UART RX: %lu bytes [%s]", xBytesToRead, pcHexDump );
+
+                    xLastPos = ( xLastPos + xBytesToRead ) % CELLULAR_UART_DMA_BUFFER_SIZE;
+                }
+            }
+            else
+            {
+                /* Wraparound - read BOTH portions in one iteration to minimize latency
+                 * This is critical for PPP where 10ms delay can cause negotiation timeouts */
+
+                /* First portion: from xLastPos to end of buffer */
+                size_t xFirstPortion = CELLULAR_UART_DMA_BUFFER_SIZE - xLastPos;
+                size_t xSecondPortion = xCurrentPos;  /* From start to current position */
+
+                /* Read first portion */
+                if( xFirstPortion <= sizeof( ucTempBuffer ) )
+                {
+                    memcpy( ucTempBuffer, &ucDmaRxBuffer[ xLastPos ], xFirstPortion );
+
+                    size_t xBytesSent = xStreamBufferSend( pxCtx->xRxBuffer, ucTempBuffer, xFirstPortion, 0 );
+
+                    if( xBytesSent != xFirstPortion )
+                    {
+                        LogError( "StreamBuffer overflow on wraparound (first): lost %lu bytes",
+                                  xFirstPortion - xBytesSent );
+                        xLastPos = ( xLastPos + xBytesSent ) % CELLULAR_UART_DMA_BUFFER_SIZE;
+                        /* Don't process second portion if first failed */
+                        continue;
+                    }
+
+                    /* Log first portion */
+                    char pcHexDump[ 80 ];
+                    size_t xHexPos = 0;
+                    for( size_t i = 0; i < xFirstPortion && i < 20; i++ )
+                    {
+                        xHexPos += snprintf( &pcHexDump[ xHexPos ], sizeof( pcHexDump ) - xHexPos,
+                                            "%02X ", ucTempBuffer[ i ] );
+                    }
+                    LogInfo( "UART RX (wraparound-1st): %lu bytes [%s]", xFirstPortion, pcHexDump );
+
+                    xLastPos = 0;  /* Advance to start of buffer */
+                }
+
+                /* Read second portion (wrapped around to start) */
+                if( xSecondPortion > 0 && xSecondPortion <= sizeof( ucTempBuffer ) )
+                {
+                    memcpy( ucTempBuffer, &ucDmaRxBuffer[ 0 ], xSecondPortion );
+
+                    size_t xBytesSent = xStreamBufferSend( pxCtx->xRxBuffer, ucTempBuffer, xSecondPortion, 0 );
+
+                    if( xBytesSent != xSecondPortion )
+                    {
+                        LogError( "StreamBuffer overflow on wraparound (second): lost %lu bytes",
+                                  xSecondPortion - xBytesSent );
+                        xLastPos = xBytesSent;
+                    }
+                    else
+                    {
+                        /* Log second portion */
+                        char pcHexDump[ 80 ];
+                        size_t xHexPos = 0;
+                        for( size_t i = 0; i < xSecondPortion && i < 20; i++ )
+                        {
+                            xHexPos += snprintf( &pcHexDump[ xHexPos ], sizeof( pcHexDump ) - xHexPos,
+                                                "%02X ", ucTempBuffer[ i ] );
+                        }
+                        LogInfo( "UART RX (wraparound-2nd): %lu bytes [%s]", xSecondPortion, pcHexDump );
+
+                        xLastPos = xSecondPortion;
+                    }
+                }
             }
         }
 

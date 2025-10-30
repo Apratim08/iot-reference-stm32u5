@@ -11,6 +11,7 @@
 
 #include "cellular_netconn.h"
 #include "cellular_prv.h"
+#include "sys_evt.h"
 
 #include <string.h>
 
@@ -197,60 +198,8 @@ static void prvCellularNetTask( void * pvParameters )
                 break;
 
             case CELLULAR_STATE_MODEM_CHECK:
-                LogInfo( "Checking modem communication..." );
+                LogInfo( "Initializing modem (minimal sequence)..." );
                 if( xCellularAtInit( pxCtx ) == pdTRUE )
-                {
-                    xState = CELLULAR_STATE_MODEM_CONFIGURE;
-                    ulRetryCount = 0;
-                }
-                else
-                {
-                    LogWarn( "Modem not responding, retry %lu/%lu", ulRetryCount + 1, ulMaxRetries );
-                    ulRetryCount++;
-                    if( ulRetryCount >= ulMaxRetries )
-                    {
-                        xState = CELLULAR_STATE_ERROR;
-                    }
-                    else
-                    {
-                        vTaskDelay( pdMS_TO_TICKS( 5000 ) );
-                    }
-                }
-                break;
-
-            case CELLULAR_STATE_MODEM_CONFIGURE:
-                LogInfo( "Configuring modem..." );
-                /* Get modem info (IMEI, firmware version, etc.) */
-                xCellularAtGetModemInfo( pxCtx );
-                xState = CELLULAR_STATE_SIM_CHECK;
-                break;
-
-            case CELLULAR_STATE_SIM_CHECK:
-                LogInfo( "Checking SIM card..." );
-                if( xCellularAtCheckSim( pxCtx ) == pdTRUE )
-                {
-                    pxCtx->xStatus = CELLULAR_STATUS_SIM_READY;
-                    xState = CELLULAR_STATE_NETWORK_REGISTER;
-                    ulRetryCount = 0;
-                }
-                else
-                {
-                    LogWarn( "SIM not ready, retry %lu/%lu", ulRetryCount + 1, ulMaxRetries );
-                    ulRetryCount++;
-                    if( ulRetryCount >= ulMaxRetries )
-                    {
-                        xState = CELLULAR_STATE_ERROR;
-                    }
-                    else
-                    {
-                        vTaskDelay( pdMS_TO_TICKS( 5000 ) );
-                    }
-                }
-                break;
-
-            case CELLULAR_STATE_NETWORK_REGISTER:
-                LogInfo( "Waiting for network registration..." );
-                if( xCellularAtWaitForRegistration( pxCtx, CELLULAR_REGISTRATION_TIMEOUT_MS ) == pdTRUE )
                 {
                     pxCtx->xStatus = CELLULAR_STATUS_REGISTERED;
                     xState = CELLULAR_STATE_APN_CONFIG;
@@ -258,7 +207,7 @@ static void prvCellularNetTask( void * pvParameters )
                 }
                 else
                 {
-                    LogWarn( "Network registration failed, retry %lu/%lu", ulRetryCount + 1, ulMaxRetries );
+                    LogWarn( "Modem init failed, retry %lu/%lu", ulRetryCount + 1, ulMaxRetries );
                     ulRetryCount++;
                     if( ulRetryCount >= ulMaxRetries )
                     {
@@ -329,6 +278,10 @@ static void prvCellularNetTask( void * pvParameters )
                     if( ulNotificationValue & CELLULAR_EVT_CONNECTED )
                     {
                         LogInfo( "PPP connection successful!" );
+
+                        /* Signal MQTT agent that network is connected */
+                        ( void ) xEventGroupSetBits( xSystemEvents, EVT_MASK_NET_CONNECTED );
+
                         xState = CELLULAR_STATE_MONITOR;
                         ulRetryCount = 0;
                     }
@@ -370,6 +323,9 @@ static void prvCellularNetTask( void * pvParameters )
             case CELLULAR_STATE_DISCONNECTED:
                 pxCtx->xStatus = CELLULAR_STATUS_DISCONNECTED;
 
+                /* Clear network connected event */
+                ( void ) xEventGroupClearBits( xSystemEvents, EVT_MASK_NET_CONNECTED );
+
                 /* Stop PPP */
                 xCellularPppStop( pxCtx );
 
@@ -382,6 +338,10 @@ static void prvCellularNetTask( void * pvParameters )
 
             case CELLULAR_STATE_ERROR:
                 pxCtx->xStatus = CELLULAR_STATUS_ERROR;
+
+                /* Clear network connected event */
+                ( void ) xEventGroupClearBits( xSystemEvents, EVT_MASK_NET_CONNECTED );
+
                 LogError( "Cellular connection error - will retry in 30 seconds" );
                 vTaskDelay( pdMS_TO_TICKS( 30000 ) );
                 xState = CELLULAR_STATE_RETRY;
