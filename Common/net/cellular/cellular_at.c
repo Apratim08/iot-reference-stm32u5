@@ -28,12 +28,12 @@
 #define AT_CMD_GET_ICCID         "+CCID"               /* Get SIM ICCID */
 #define AT_CMD_GET_FW_VER        "I"                   /* Get firmware version */
 #define AT_CMD_CHECK_SIM         "+CPIN?"              /* Check SIM status */
-#define AT_CMD_GET_REG_STATUS    "+CREG?"              /* Get registration status */
-#define AT_CMD_SET_REG_URC       "+CREG=1"             /* Enable registration URCs */
+#define AT_CMD_GET_REG_STATUS    "+CEREG?"             /* Get EPS registration (LTE/NB-IoT) */
+#define AT_CMD_SET_REG_URC       "+CEREG=2"            /* Enable detailed registration URCs */
 #define AT_CMD_GET_SIGNAL        "+CSQ"                /* Get signal quality */
 #define AT_CMD_SET_PDP_CONTEXT   "+CGDCONT=1,\"IP\",\""     /* Set PDP context */
-#define AT_CMD_ACTIVATE_PDP      "+CGACT=1,1"          /* Activate PDP context */
-#define AT_CMD_START_PPP         "DT*99#"              /* Start PPP session (tone dialing, matches RPi) */
+#define AT_CMD_AUTH_NONE         "+CGAUTH=1,0"         /* No authentication for PDP context 1 */
+#define AT_CMD_START_PPP         "D*99#"               /* Start PPP (auto-activates PDP context) */
 #define AT_CMD_ESCAPE_SEQ        "+++"                 /* Escape sequence (PPP -> AT) */
 
 /* Response strings */
@@ -65,67 +65,6 @@ BaseType_t xCellularAtInit( CellularContext_t * pxCtx )
     }
 
     LogInfo( "Initializing cellular AT command interface" );
-
-    /* === SIMPLE UART TEST - Bypass all complexity === */
-    LogInfo( "=== STARTING SIMPLE UART TEST ===" );
-
-    /* Ensure UART is not in PPP mode */
-    vCellularUartSetPppMode( &( pxCtx->xUartCtx ), pdFALSE );
-
-    /* Wait for modem to boot */
-    vTaskDelay( pdMS_TO_TICKS( 5000 ) );
-
-    /* Send simple AT command */
-    const char * pcTestCmd = "AT\r\n";
-    LogInfo( "Sending: AT" );
-
-    /* Send via UART (should work) */
-    if( xCellularUartSend( &( pxCtx->xUartCtx ), (const uint8_t*)pcTestCmd, strlen(pcTestCmd) ) != pdTRUE )
-    {
-        LogError( "xCellularUartSend failed" );
-    }
-    else
-    {
-        LogInfo( "Transmit OK, waiting for response..." );
-
-        /* Wait for modem to respond */
-        vTaskDelay( pdMS_TO_TICKS( 1000 ) );
-
-        /* Try to receive from stream buffer (where DMA puts the data) */
-        uint8_t ucRxBuf[128];
-        memset(ucRxBuf, 0, sizeof(ucRxBuf));
-
-        size_t xBytesReceived = xStreamBufferReceive( pxCtx->xUartCtx.xRxBuffer,
-                                                       ucRxBuf,
-                                                       sizeof(ucRxBuf) - 1,
-                                                       pdMS_TO_TICKS( 1000 ) );
-
-        LogInfo( "Received %lu bytes from stream buffer", xBytesReceived );
-
-        if( xBytesReceived > 0 )
-        {
-            /* Null terminate for string printing */
-            ucRxBuf[xBytesReceived] = '\0';
-            LogInfo( "Received string: [%s]", ucRxBuf );
-
-            /* Show raw bytes */
-            LogInfo( "Raw hex dump:" );
-            for(size_t i = 0; i < xBytesReceived && i < 64; i++)
-            {
-                LogInfo( "  [%02lu] = 0x%02X (%c)", i, ucRxBuf[i],
-                         (ucRxBuf[i] >= 32 && ucRxBuf[i] < 127) ? ucRxBuf[i] : '.' );
-            }
-        }
-        else
-        {
-            LogError( "No data received from stream buffer" );
-        }
-    }
-
-    LogInfo( "=== END SIMPLE UART TEST ===" );
-    LogInfo( "Continuing with normal initialization..." );
-
-    /* === END SIMPLE TEST === */
 
     /* Flush any stale data from the stream buffer (especially important on retries) */
     uint8_t ucDummy[ 256 ];
@@ -532,23 +471,49 @@ BaseType_t xCellularAtStartPpp( CellularContext_t * pxCtx )
 
     LogInfo( "Starting PPP session..." );
 
-    /* URCs are not enabled, so no need to disable them */
+    /* Disable network registration URCs to prevent them from polluting PPP stream */
+    LogInfo( "Disabling network registration URCs..." );
+    xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+                            "+CEREG=0",
+                            pcResponse,
+                            sizeof( pcResponse ),
+                            CELLULAR_DEFAULT_TIMEOUT_MS );
 
-    /* Skip AT+CGACT - RPi doesn't use it, ATD*99# activates PDP automatically */
-    /* Activate PDP context first */
-    /* if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
-                                AT_CMD_ACTIVATE_PDP,
+    /* Set authentication to none (Monogoto SIM doesn't require auth) */
+    LogInfo( "Setting PDP authentication..." );
+    if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
+                                AT_CMD_AUTH_NONE,
                                 pcResponse,
                                 sizeof( pcResponse ),
                                 CELLULAR_DEFAULT_TIMEOUT_MS ) == pdTRUE )
     {
-        if( !prvCheckResponseOk( pcResponse ) )
+        if( prvCheckResponseOk( pcResponse ) )
         {
-            LogWarn( "PDP activation failed, continuing anyway" );
+            LogInfo( "PDP authentication set to none" );
         }
-    } */
+        else
+        {
+            LogWarn( "PDP auth command failed, continuing anyway: %s", pcResponse );
+        }
+    }
 
-    /* Start PPP with ATD*99# */
+    /* Short delay to let any pending URCs arrive and be flushed */
+    vTaskDelay( pdMS_TO_TICKS( 500 ) );
+
+    /* Flush any pending data (URCs, echoes, etc) */
+    uint8_t ucFlush[ 256 ];
+    size_t ulTotalFlushed = 0;
+    while( xCellularUartRecv( &( pxCtx->xUartCtx ), ucFlush, sizeof( ucFlush ), pdMS_TO_TICKS( 100 ) ) == pdTRUE )
+    {
+        ulTotalFlushed += sizeof( ucFlush );
+    }
+    LogInfo( "Flushed %lu bytes before PPP start", ulTotalFlushed );
+
+    /* Start PPP with ATD*99#
+     * NOTE: ATD*99# automatically activates the PDP context, so there's no need
+     * for AT+CGACT=1,1 beforehand (and it may even cause an error if used).
+     * The PDP context (AT+CGDCONT) must be configured first, which is done earlier.
+     */
     if( xCellularAtSendCommand( &( pxCtx->xUartCtx ),
                                 AT_CMD_START_PPP,
                                 pcResponse,
@@ -653,13 +618,17 @@ static BaseType_t prvCheckResponseOk( const char * pcResponse )
 
 static BaseType_t prvParseRegistrationStatus( const char * pcResponse, CellularRegState_t * pxRegState )
 {
-    /* Parse "+CREG: n,stat" response */
-    const char * pcCregStart = strstr( pcResponse, "+CREG:" );
+    /* Parse "+CEREG: n,stat" response (EPS registration for LTE/NB-IoT) */
+    const char * pcCeregStart = strstr( pcResponse, "+CEREG:" );
 
-    if( pcCregStart != NULL )
+    if( pcCeregStart != NULL )
     {
         int n, stat;
-        if( sscanf( pcCregStart, "+CREG: %d,%d", &n, &stat ) == 2 )
+        /* +CEREG can return different formats:
+         * +CEREG: n,stat
+         * +CEREG: n,stat,tac,ci,AcT  (when n=2)
+         * We only care about stat field */
+        if( sscanf( pcCeregStart, "+CEREG: %d,%d", &n, &stat ) == 2 )
         {
             *pxRegState = ( CellularRegState_t ) stat;
             return pdTRUE;

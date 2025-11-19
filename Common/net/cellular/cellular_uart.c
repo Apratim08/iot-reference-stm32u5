@@ -238,7 +238,20 @@ void vCellularUartSetPppMode( CellularUartCtx_t * pxCtx, BaseType_t xEnable )
     if( pxCtx != NULL )
     {
         pxCtx->xPppMode = xEnable;
-        LogInfo( "UART mode set to: %s", xEnable ? "PPP" : "AT" );
+
+        if( xEnable )
+        {
+            /* Switching to PPP mode - clear stream buffer to discard any buffered AT responses */
+            if( pxCtx->xRxBuffer != NULL )
+            {
+                xStreamBufferReset( pxCtx->xRxBuffer );
+                LogInfo( "UART mode set to PPP (stream buffer reset)" );
+            }
+        }
+        else
+        {
+            LogInfo( "UART mode set to AT" );
+        }
     }
 }
 
@@ -288,22 +301,29 @@ void vCellularUartRxTask( void * pvParameters )
             /* Send to message buffer for processing */
             if( xBytesToRead > 0 )
             {
-                /* Log received data for debugging - show hex dump */
-                char pcHexDump[ 80 ];
-                size_t xHexPos = 0;
-                for( size_t i = 0; i < xBytesToRead && i < 20; i++ )
+                /* Only log hex dump in AT mode - PPP mode generates too much data */
+                if( pxCtx->xPppMode == pdFALSE )
                 {
-                    xHexPos += snprintf( &pcHexDump[ xHexPos ], sizeof( pcHexDump ) - xHexPos,
-                                        "%02X ", ucTempBuffer[ i ] );
+                    /* Log received data for debugging - show hex dump */
+                    char pcHexDump[ 80 ];
+                    size_t xHexPos = 0;
+                    for( size_t i = 0; i < xBytesToRead && i < 20; i++ )
+                    {
+                        xHexPos += snprintf( &pcHexDump[ xHexPos ], sizeof( pcHexDump ) - xHexPos,
+                                            "%02X ", ucTempBuffer[ i ] );
+                    }
+                    LogInfo( "UART RX: %lu bytes [%s]", xBytesToRead, pcHexDump );
                 }
-                LogInfo( "UART RX: %lu bytes [%s]", xBytesToRead, pcHexDump );
 
                 /* Send to stream buffer - non-blocking for now */
-                size_t xBytesSent = xStreamBufferSend( pxCtx->xRxBuffer, ucTempBuffer, xBytesToRead, 0 );
-
-                if( xBytesSent != xBytesToRead )
+                if( pxCtx->xRxBuffer != NULL )
                 {
-                    LogError( "StreamBuffer send failed: sent %lu of %lu bytes", xBytesSent, xBytesToRead );
+                    size_t xBytesSent = xStreamBufferSend( pxCtx->xRxBuffer, ucTempBuffer, xBytesToRead, 0 );
+
+                    if( xBytesSent != xBytesToRead )
+                    {
+                        LogError( "StreamBuffer send failed: sent %lu of %lu bytes", xBytesSent, xBytesToRead );
+                    }
                 }
                 xLastPos = ( xLastPos + xBytesToRead ) % CELLULAR_UART_DMA_BUFFER_SIZE;
             }

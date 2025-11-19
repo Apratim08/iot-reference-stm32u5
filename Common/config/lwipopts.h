@@ -22,25 +22,26 @@
 
 #include "lwipopts_freertos.h"
 
-/*#define LWIP_DEBUG        1 */
+#define LWIP_DEBUG        1
+#define DNS_DEBUG         LWIP_DBG_ON
+#define UDP_DEBUG         LWIP_DBG_ON
+#define IP_DEBUG          LWIP_DBG_ON
 /* #define DHCP_DEBUG     LWIP_DBG_ON */
 /* #define ETHARP_DEBUG     LWIP_DBG_ON */
 /* #define SOCKETS_DEBUG     LWIP_DBG_ON */
 /* #define TCP_DEBUG         LWIP_DBG_ON */
-/* #define UDP_DEBUG         LWIP_DBG_ON */
-/* #define IP_DEBUG          LWIP_DBG_ON */
 /* #define MEM_DEBUG         LWIP_DBG_ON */
 /*#define PBUF_DEBUG          LWIP_DBG_ON */
 
-/* Enable PPP debugging (uncomment to debug PPP issues) */
-#define LWIP_DEBUG        1
-#define PPP_DEBUG         LWIP_DBG_ON
-#define IPCP_DEBUG        LWIP_DBG_ON
-
-/* PPP FSM timeouts - reduce from default 6s to 3s for faster negotiation
- * The 6-second default timeout causes the SIM7600G modem to enter a confused
- * state where it buffers AT responses and triggers unwanted renegotiation.
+/* Enable PPP debugging (uncomment to debug PPP issues)
+ * NOTE: PPP/IPCP debug logging can cause deadlocks with LWIP_TCPIP_CORE_LOCKING=1
+ * Disable during normal operation, only enable for specific debugging
  */
+/* #define LWIP_DEBUG        1 */
+/* #define PPP_DEBUG         LWIP_DBG_ON */
+/* #define IPCP_DEBUG        LWIP_DBG_ON */
+
+/* PPP FSM timeouts - reduce from default 6s to 3s for faster negotiation */
 #define FSM_DEFTIMEOUT    3  /* Timeout in seconds (default: 6) */
 
 /*#define LWIP_IPV6                       1 */
@@ -172,6 +173,10 @@
 
 /* Disable VJ compression for cellular modems (many don't support it) */
 #define VJ_SUPPORT                      0      /* Disable Van Jacobson header compression */
+
+/* IPCP options - request DNS servers from modem */
+#define LWIP_DNS_SUPPORT_MDNS_QUERIES   0      /* Disable mDNS */
+#define PPP_SERVER                      0      /* We are PPP client, not server */
 
 /* Memory pools for PPP */
 #define MEMP_NUM_PPP_PCB                1      /* Number of PPP control blocks */

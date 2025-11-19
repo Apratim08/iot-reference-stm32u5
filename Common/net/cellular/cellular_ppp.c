@@ -64,10 +64,16 @@ BaseType_t xCellularPppInit( CellularContext_t * pxCtx )
      */
     ppp_set_auth( pxPppPcb, PPPAUTHTYPE_ANY, "", "" );
 
-    /* Use lwIP's default IPCP configuration
-     * Note: "Could not determine remote IP address: defaulting to 10.64.64.64"
-     * is normal - RPi shows the same warning and works fine
+    /* Configure IPCP to request DNS servers from the peer (cellular modem)
+     * This is critical for successful IPCP negotiation with cellular modems.
      */
+    pxPppPcb->settings.usepeerdns = 1;
+
+    /* Accept PAP/CHAP authentication if the modem requests it
+     * Most cellular modems don't require auth (SIM-based), but accept if requested
+     */
+    pxPppPcb->settings.refuse_pap = 0;       /* Accept PAP if requested */
+    pxPppPcb->settings.refuse_chap = 0;      /* Accept CHAP if requested */
 
     /* Set default route through this interface */
     ppp_set_default( pxPppPcb );
@@ -167,6 +173,8 @@ void vCellularPppTask( void * pvParameters )
 
     LogInfo( "PPP bridge task started" );
 
+    static uint32_t ulRxCount = 0;
+
     while( pxCtx->xPppTaskExit == pdFALSE )
     {
         /* Read data from UART (with timeout) */
@@ -177,8 +185,16 @@ void vCellularPppTask( void * pvParameters )
 
         if( xBytesRead > 0 )
         {
+            /* Log packet reception for debugging (keep minimal to avoid spam) */
+            if( ( ulRxCount % 10 ) == 0 || xBytesRead < 200 )
+            {
+                /* Log small packets (like DNS responses) or every 10th packet */
+                LogInfo( "PPP RX: %lu bytes (total: %lu)", xBytesRead, ulRxCount );
+            }
+            ulRxCount++;
+
             /* Feed received data to PPP stack */
-            pppos_input( ( ppp_pcb * ) pxCtx->pxPppPcb, ucBuffer, xBytesRead );
+            pppos_input( ( ppp_pcb * ) pxCtx->pxPppPcb, ucBuffer, ( int ) xBytesRead );
         }
 
         /* Yield to other tasks periodically */
@@ -198,6 +214,7 @@ void vCellularPppTask( void * pvParameters )
  */
 static u32_t prvPppOutputCallback( ppp_pcb * pcb, u8_t * pucData, u32_t ulLen, void * pvCtx )
 {
+    ( void ) pcb;  /* Unused parameter */
     CellularContext_t * pxCtx = ( CellularContext_t * ) pvCtx;
 
     if( pxCtx == NULL || pucData == NULL || ulLen == 0 )
@@ -205,12 +222,22 @@ static u32_t prvPppOutputCallback( ppp_pcb * pcb, u8_t * pucData, u32_t ulLen, v
         return 0;
     }
 
+    /* Log packet transmission for debugging (keep minimal to avoid spam) */
+    static uint32_t ulTxCount = 0;
+    if( ( ulTxCount % 10 ) == 0 || ulLen < 200 )
+    {
+        /* Log small packets (like DNS queries) or every 10th packet */
+        LogInfo( "PPP TX: %lu bytes (total: %lu)", ulLen, ulTxCount );
+    }
+    ulTxCount++;
+
     /* Send data to UART */
     if( xCellularUartSend( &( pxCtx->xUartCtx ), pucData, ulLen ) == pdTRUE )
     {
         return ulLen;
     }
 
+    LogError( "PPP TX failed: UART send error" );
     return 0;
 }
 
@@ -219,36 +246,23 @@ static u32_t prvPppOutputCallback( ppp_pcb * pcb, u8_t * pucData, u32_t ulLen, v
  */
 static void prvPppLinkStatusCallback( ppp_pcb * pcb, int errCode, void * pvCtx )
 {
+    ( void ) pcb;  /* Unused - minimize processing in lwIP callback */
     CellularContext_t * pxCtx = ( CellularContext_t * ) pvCtx;
-    struct netif * pxNetif = ppp_netif( pcb );
 
     switch( errCode )
     {
         case PPPERR_NONE:
         {
-            /* PPP connection is up */
-            LogInfo( "PPP connection established" );
-            LogInfo( "   Local IP: %s", ip4addr_ntoa( netif_ip4_addr( pxNetif ) ) );
-            LogInfo( "   Netmask:  %s", ip4addr_ntoa( netif_ip4_netmask( pxNetif ) ) );
-            LogInfo( "   Gateway:  %s", ip4addr_ntoa( netif_ip4_gw( pxNetif ) ) );
-
-            /* Get DNS servers */
-            const ip_addr_t * pxDns1 = dns_getserver( 0 );
-            const ip_addr_t * pxDns2 = dns_getserver( 1 );
-
-            if( pxDns1 != NULL )
-            {
-                LogInfo( "   DNS1:     %s", ipaddr_ntoa( pxDns1 ) );
-            }
-            if( pxDns2 != NULL )
-            {
-                LogInfo( "   DNS2:     %s", ipaddr_ntoa( pxDns2 ) );
-            }
+            /* PPP connection is up
+             * IMPORTANT: This callback runs in lwIP's tcpip thread context.
+             * Keep processing minimal - just update state and notify.
+             * Defer logging to avoid potential deadlocks with LWIP_TCPIP_CORE_LOCKING.
+             */
 
             /* Update status */
             pxCtx->xStatus = CELLULAR_STATUS_PPP_RUNNING;
 
-            /* Notify management task */
+            /* Notify management task - this will handle logging in its own context */
             if( pxCtx->xNetTaskHandle != NULL )
             {
                 xTaskNotifyIndexed( pxCtx->xNetTaskHandle,

@@ -11,6 +11,8 @@
 
 #include "cellular_netconn.h"
 #include "cellular_prv.h"
+#include "sys_evt.h"
+#include "lwip/dns.h"
 
 #include <string.h>
 
@@ -136,6 +138,9 @@ static void prvLwipReadyCallback( void * pvCtx )
     CellularContext_t * pxCtx = ( CellularContext_t * ) pvCtx;
 
     LogInfo( "lwIP TCP/IP stack is ready" );
+
+    /* Signal system that network stack is initialized */
+    ( void ) xEventGroupSetBits( xSystemEvents, EVT_MASK_NET_INIT );
 
     if( pxCtx->xNetTaskHandle != NULL )
     {
@@ -328,7 +333,51 @@ static void prvCellularNetTask( void * pvParameters )
                 {
                     if( ulNotificationValue & CELLULAR_EVT_CONNECTED )
                     {
-                        LogInfo( "PPP connection successful!" );
+                        LogInfo( "PPP connection established!" );
+
+                        /* Log connection details */
+                        const ip4_addr_t * pxIp = netif_ip4_addr( &( pxCtx->xPppNetif ) );
+                        const ip4_addr_t * pxNetmask = netif_ip4_netmask( &( pxCtx->xPppNetif ) );
+                        const ip4_addr_t * pxGw = netif_ip4_gw( &( pxCtx->xPppNetif ) );
+
+                        LogInfo( "   Local IP: %s", ip4addr_ntoa( pxIp ) );
+                        LogInfo( "   Netmask:  %s", ip4addr_ntoa( pxNetmask ) );
+                        LogInfo( "   Gateway:  %s", ip4addr_ntoa( pxGw ) );
+
+                        /* Get DNS servers provided by IPCP */
+                        const ip_addr_t * pxDns1 = dns_getserver( 0 );
+                        const ip_addr_t * pxDns2 = dns_getserver( 1 );
+
+                        if( pxDns1 != NULL && !ip_addr_isany( pxDns1 ) )
+                        {
+                            LogInfo( "   DNS1 (from IPCP): %s", ipaddr_ntoa( pxDns1 ) );
+                        }
+                        if( pxDns2 != NULL && !ip_addr_isany( pxDns2 ) )
+                        {
+                            LogInfo( "   DNS2 (from IPCP): %s", ipaddr_ntoa( pxDns2 ) );
+                        }
+
+                        /* WORKAROUND: The modem doesn't proxy DNS queries to external servers (8.8.8.8).
+                         * Instead, override DNS to query the modem's own DNS server at the gateway IP.
+                         * Even though gateway has /32 netmask issue, PPP should route it correctly.
+                         */
+                        ip_addr_t xModemDns;
+                        ip_addr_copy_from_ip4( xModemDns, *pxGw );
+                        dns_setserver( 0, &xModemDns );
+                        dns_setserver( 1, &xModemDns );
+                        LogInfo( "   DNS overridden to modem gateway: %s", ip4addr_ntoa( pxGw ) );
+
+                        /* Log netif status for debugging */
+                        extern struct netif *netif_default;
+                        LogInfo( "   Netif status: up=%d link_up=%d default=%d",
+                                 netif_is_up( &( pxCtx->xPppNetif ) ),
+                                 netif_is_link_up( &( pxCtx->xPppNetif ) ),
+                                 ( &( pxCtx->xPppNetif ) == netif_default ) ? 1 : 0 );
+
+                        /* Signal system that network is connected - this allows MQTT to start */
+                        ( void ) xEventGroupSetBits( xSystemEvents, EVT_MASK_NET_CONNECTED );
+                        LogInfo( "Network ready - MQTT can now connect" );
+
                         xState = CELLULAR_STATE_MONITOR;
                         ulRetryCount = 0;
                     }
@@ -369,6 +418,9 @@ static void prvCellularNetTask( void * pvParameters )
 
             case CELLULAR_STATE_DISCONNECTED:
                 pxCtx->xStatus = CELLULAR_STATUS_DISCONNECTED;
+
+                /* Clear network connected event - this will signal MQTT to disconnect */
+                ( void ) xEventGroupClearBits( xSystemEvents, EVT_MASK_NET_CONNECTED );
 
                 /* Stop PPP */
                 xCellularPppStop( pxCtx );
